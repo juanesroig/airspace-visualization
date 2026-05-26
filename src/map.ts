@@ -1,15 +1,10 @@
 import * as THREE from 'three'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
-import {
-    MercatorCoordinate,
-  type CustomLayerInterface,
-  type Map as MapboxMap,
-} from "mapbox-gl"
+import maplibregl from 'maplibre-gl'
 import type { OpenSkyStateItem } from "./api"
 
 const AIRCRAFTS_ = 'aircrafts_'
 const AIRCRAFT_MODEL_URL = '/airplane.obj'
-const AIRCRAFT_MODEL_SCALE = 0.5
 
 const create_layer_id = () => {
   if (globalThis.crypto?.randomUUID) {
@@ -31,12 +26,12 @@ export class AircraftLayer  {
   loader = new OBJLoader()
   renderer: THREE.WebGLRenderer = {} as THREE.WebGLRenderer
   aircrafts = new Map<string, AircraftMapData>()
-  layer_params: CustomLayerInterface
-  map: MapboxMap
+  layer_params: maplibregl.CustomLayerInterface
+  map: maplibregl.Map
   model_template: THREE.Object3D | null = null
   private model_template_loading: Promise<THREE.Object3D> | null = null
 
-  constructor(map: MapboxMap) {
+  constructor(map: maplibregl.Map) {
     this.layer_params = {
       id: create_layer_id(),
       type: 'custom',
@@ -51,8 +46,8 @@ export class AircraftLayer  {
         this.add_lights()
         this.load_model_template()
       },
-      render: (_gl, matrix) => {
-        this.camera.projectionMatrix = new THREE.Matrix4().fromArray(matrix)
+      render: (_gl, args) => {
+        this.camera.projectionMatrix = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix)
         this.renderer.resetState()
         this.renderer.render(this.scene, this.camera)
         this.map.triggerRepaint()
@@ -111,23 +106,33 @@ export class AircraftLayer  {
     aircraft_object: THREE.Object3D,
     state: OpenSkyStateItem,
   ) {
-    if (state.latitude === null || state.longitude === null) {
-      return
-    }
-
-    const mercator_coordinate = MercatorCoordinate.fromLngLat(
+    const model_matrix = this.map.transform.getMatrixForModel(
       [state.longitude, state.latitude],
-      Math.max(state.geo_altitude ?? 0, 0)
+      Math.max(state.geo_altitude ?? 0, 0),
     )
-    const mercator_scale = mercator_coordinate.meterInMercatorCoordinateUnits()
-    const scaled_size = mercator_scale * AIRCRAFT_MODEL_SCALE
 
-    aircraft_object.position.set(
-      mercator_coordinate.x,
-      mercator_coordinate.y,
-      mercator_coordinate.z,
+    const heading_rad = THREE.MathUtils.degToRad(state.true_track ?? 0)
+
+    const north_normalization = Math.PI / 2
+    const direction_rotation_matrix = new THREE.Matrix4().makeRotationY(north_normalization - heading_rad)
+    const normalization_rotation_matrix = new THREE.Matrix4().makeRotationX(Math.PI/2)
+
+    const AIRCRAFT_MODEL_SCALE_AT_WORLD_VIEW = 1
+    const scale_matrix = new THREE.Matrix4().makeScale(
+      AIRCRAFT_MODEL_SCALE_AT_WORLD_VIEW,
+      AIRCRAFT_MODEL_SCALE_AT_WORLD_VIEW,
+      AIRCRAFT_MODEL_SCALE_AT_WORLD_VIEW,
     )
-    aircraft_object.scale.set(scaled_size, scaled_size, scaled_size)
+
+    const aircraft_matrix = new THREE.Matrix4()
+      .fromArray(model_matrix)
+      .multiply(scale_matrix)
+      .multiply(direction_rotation_matrix)
+      .multiply(normalization_rotation_matrix)
+
+    aircraft_object.matrixAutoUpdate = false
+    aircraft_object.matrix.copy(aircraft_matrix)
+    aircraft_object.updateMatrixWorld(true)
   }
 
   init() {
@@ -148,10 +153,7 @@ export class AircraftLayer  {
     const active_icao24 = new Set<string>()
 
     for (const state of opensky_states) {
-      const icao24 = state.icao24?.trim()
-      if (!icao24) {
-        continue
-      }
+      const icao24 = state.icao24.trim()
       active_icao24.add(icao24)
 
       let aircraft_map_data = this.aircrafts.get(icao24)

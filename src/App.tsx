@@ -3,9 +3,10 @@ import { opensky_loading_states, opensky_state_atom } from "./state";
 import { useEffect, useRef } from "react";
 import { OPEN_SKY_STATES_PAYLOAD_COLUMNS, opensky_url, type OpenSkyStateItem, type OpenSkyStatesPayload } from "./api";
 import { AircraftLayer } from "./map";
+import maplibregl from 'maplibre-gl'
 
 type AppProps = {
-  map: mapboxgl.Map;
+  map: maplibregl.Map;
 }
 function App({map}: AppProps) {
   const [opensky_state, set_opensky_state] = useAtom(opensky_state_atom)
