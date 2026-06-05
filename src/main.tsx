@@ -9,7 +9,7 @@ const map = new maplibregl.Map({
   container: 'map',
   style: 'https://api.maptiler.com/maps/hybrid-v4-dark/style.json?key=xRFctPYdIXy6WuSSlKCV', // style URL
   center: [0, 0],
-  zoom: 1,
+  zoom: 3,
 });
 
 map.on('style.load', () => {

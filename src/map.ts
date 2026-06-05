@@ -1,14 +1,20 @@
 import * as THREE from 'three'
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
-import maplibregl from 'maplibre-gl'
+import maplibregl, { GeoJSONSource } from 'maplibre-gl'
 import type { OpenSkyStateItem } from "./api"
+import { deg_to_rad, project_position } from './utils'
+import { lerp } from 'three/src/math/MathUtils.js'
+import { GLTFLoader } from 'three/examples/jsm/Addons.js'
 
 const AIRCRAFTS_ = 'aircrafts_'
-const AIRCRAFT_MODEL_URL = '/airplane.obj'
+const AIRCRAFTS_SRC = AIRCRAFTS_ + 'src'
+const AIRCRAFT_MODEL_URL = '/airplane.glb'
+const AIRCRAFT_SPRITE_URL = '/airplane.png'
+const ZOOM_THRESHOLD = 7
+const DELTA_MS = 18_000
 
-const create_layer_id = () => {
+const create_layer_id = (suffix: string) => {
   if (globalThis.crypto?.randomUUID) {
-    return AIRCRAFTS_ + globalThis.crypto.randomUUID()
+    return AIRCRAFTS_ + globalThis.crypto.randomUUID() + suffix
   }
 
   const random_suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`
@@ -16,24 +22,34 @@ const create_layer_id = () => {
 }
 
 type AircraftMapData = {
-  object: THREE.Object3D
+  object: THREE.Object3D;
   // TODO: Add values for linear interpolation
+  altitude: number;
+  heading_deg: number;
+  origin_lon: number;
+  origin_lat: number;
+  destination_lon: number;
+  destination_lat: number;
+  updated_at: number;
+  progress: number;
 }
 
 export class AircraftLayer  {
   camera = new THREE.Camera()
   scene = new THREE.Scene()
-  loader = new OBJLoader()
+  loader = new GLTFLoader()
   renderer: THREE.WebGLRenderer = {} as THREE.WebGLRenderer
   aircrafts = new Map<string, AircraftMapData>()
-  layer_params: maplibregl.CustomLayerInterface
+  custom_layer_params: maplibregl.CustomLayerInterface
+  symbol_layer_params: maplibregl.SymbolLayerSpecification
   map: maplibregl.Map
   model_template: THREE.Object3D | null = null
   private model_template_loading: Promise<THREE.Object3D> | null = null
+  last_frame = performance.now()
 
   constructor(map: maplibregl.Map) {
-    this.layer_params = {
-      id: create_layer_id(),
+    this.custom_layer_params = {
+      id: create_layer_id('3d'),
       type: 'custom',
       renderingMode: '3d',
       onAdd: (current_map, gl) => {
@@ -47,13 +63,85 @@ export class AircraftLayer  {
         this.load_model_template()
       },
       render: (_gl, args) => {
+        const now = performance.now()
+        const dt = now - this.last_frame
+        this.last_frame = now
         this.camera.projectionMatrix = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix)
+
+        for (const [id, aircraft] of this.aircrafts.entries()) {
+          const progress = aircraft.progress + dt / DELTA_MS
+          // TODO: If progress > 1, recompute new destination coords
+          const new_lon = lerp(aircraft.origin_lon, aircraft.destination_lon, progress)
+          const new_lat = lerp(aircraft.origin_lat, aircraft.destination_lat, progress)
+          this.update_aircraft_object_position(
+            aircraft.object,
+            new_lon,
+            new_lat,
+            aircraft.altitude,
+            aircraft.heading_deg,
+          )
+          this.aircrafts.set(id, {...aircraft, progress})
+        }
+
+        this.update_geojson_src()
         this.renderer.resetState()
+
+        if (this.map.getZoom() < ZOOM_THRESHOLD) return
         this.renderer.render(this.scene, this.camera)
         this.map.triggerRepaint()
       }
     }
+    this.symbol_layer_params = {
+      id: create_layer_id('symbol'),
+      type: 'symbol',
+      source: AIRCRAFTS_SRC,
+      layout: {
+        'icon-size': 0.015,
+        'icon-image': 'airplane',
+        'visibility': 'visible',
+        'icon-rotation-alignment': 'map',
+        'icon-rotate': ['get', 'true_track'],
+        'icon-allow-overlap': true,
+      },
+      paint: {
+        'icon-color': '#ffffff',
+      },
+      maxzoom: ZOOM_THRESHOLD,
+    }
     this.map = map
+  }
+
+  private aircrafts_to_geojson() {
+    const geojson: maplibregl.GeoJSONSourceSpecification = {
+      type: 'geojson',
+      data: {
+        type: 'FeatureCollection',
+        features: Array.from(this.aircrafts.entries()).map(([icao24, state]) => ({
+          type: 'Feature',
+          geometry:  {
+            type: 'Point',
+            coordinates: [
+              lerp(state.origin_lon, state.destination_lon, state.progress),
+              lerp(state.origin_lat, state.destination_lat, state.progress)
+            ],
+          },
+          properties: {
+            name: icao24,
+            altitude: state.altitude,
+            true_track: state.heading_deg,
+          }
+        }))
+      }
+    }
+    return geojson
+  }
+
+  private update_geojson_src() {
+    const source = this.map.getSource(AIRCRAFTS_SRC)
+    if (source !== undefined && source.type === "geojson") {
+      const geojson = this.aircrafts_to_geojson();
+      (source as GeoJSONSource).setData(geojson.data)
+    }
   }
 
   private add_lights() {
@@ -77,15 +165,15 @@ export class AircraftLayer  {
     this.model_template_loading = new Promise((resolve, reject) => {
       this.loader.load(
         AIRCRAFT_MODEL_URL,
-        object => {
-          object.traverse(node => {
+        gltf => {
+          gltf.scene.traverse(node => {
             if (node instanceof THREE.Mesh) {
               node.castShadow = false
               node.receiveShadow = false
             }
           })
-          this.model_template = object
-          resolve(object)
+          this.model_template = gltf.scene
+          resolve(gltf.scene)
         },
         undefined,
         error => {
@@ -104,20 +192,21 @@ export class AircraftLayer  {
 
   private update_aircraft_object_position(
     aircraft_object: THREE.Object3D,
-    state: OpenSkyStateItem,
+    x: number,
+    y: number,
+    z: number,
+    rotation_deg: number,
   ) {
     const model_matrix = this.map.transform.getMatrixForModel(
-      [state.longitude, state.latitude],
-      Math.max(state.geo_altitude ?? 0, 0),
+      [x, y],
+      Math.max(z, 0),
     )
-
-    const heading_rad = THREE.MathUtils.degToRad(state.true_track ?? 0)
-
-    const north_normalization = Math.PI / 2
+    const heading_rad = deg_to_rad(rotation_deg)
+    const north_normalization = Math.PI
     const direction_rotation_matrix = new THREE.Matrix4().makeRotationY(north_normalization - heading_rad)
     const normalization_rotation_matrix = new THREE.Matrix4().makeRotationX(Math.PI/2)
 
-    const AIRCRAFT_MODEL_SCALE_AT_WORLD_VIEW = 1
+    const AIRCRAFT_MODEL_SCALE_AT_WORLD_VIEW = 90
     const scale_matrix = new THREE.Matrix4().makeScale(
       AIRCRAFT_MODEL_SCALE_AT_WORLD_VIEW,
       AIRCRAFT_MODEL_SCALE_AT_WORLD_VIEW,
@@ -136,7 +225,12 @@ export class AircraftLayer  {
   }
 
   init() {
-    this.map.addLayer(this.layer_params)
+    this.map.addLayer(this.custom_layer_params)
+    this.map.loadImage(AIRCRAFT_SPRITE_URL).then(image => {
+      this.map.addSource(AIRCRAFTS_SRC, this.aircrafts_to_geojson())
+      this.map.addImage('airplane', image.data)
+      this.map.addLayer(this.symbol_layer_params)
+    })
   }
 
   async update_aircrafts(opensky_states: OpenSkyStateItem[]) {
@@ -156,15 +250,40 @@ export class AircraftLayer  {
       const icao24 = state.icao24.trim()
       active_icao24.add(icao24)
 
-      let aircraft_map_data = this.aircrafts.get(icao24)
-      if (!aircraft_map_data) {
-        const aircraft_object = this.model_template.clone(true)
-        aircraft_map_data = { object: aircraft_object }
-        this.aircrafts.set(icao24, aircraft_map_data)
+      let aircraft_object = this.aircrafts.get(icao24)?.object
+      if (aircraft_object === undefined) {
+        aircraft_object = this.model_template.clone(true)
         this.scene.add(aircraft_object)
       }
+      const [destination_lon, destination_lat] = project_position(
+        state.longitude,
+        state.latitude,
+        state.true_track ?? 0, // FIXME:
+        state.velocity ?? 0, // FIXME:
+        DELTA_MS / 1000,
+      )
+      const aircraft_map_data = {
+        object: aircraft_object,
+        origin_lon: state.longitude,
+        origin_lat: state.latitude,
+        destination_lon,
+        destination_lat,
+        updated_at: performance.now(),
+        altitude: state.geo_altitude ?? 0,
+        heading_deg: state.true_track ?? 0,
+        progress: 0,
+      }
+      if (!aircraft_map_data) {
+      } 
+     this.aircrafts.set(icao24, aircraft_map_data)
 
-      this.update_aircraft_object_position(aircraft_map_data.object, state)
+      this.update_aircraft_object_position(
+        aircraft_map_data.object,
+        state.longitude,
+        state.latitude,
+        state.geo_altitude ?? 0,
+        state.true_track ?? 0,
+      )
     }
 
     for (const [icao24, aircraft_map_data] of this.aircrafts) {
@@ -176,6 +295,7 @@ export class AircraftLayer  {
       this.aircrafts.delete(icao24)
     }
 
+    this.update_geojson_src()
     this.map.triggerRepaint()
   }
 }
