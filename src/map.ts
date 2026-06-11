@@ -273,9 +273,7 @@ export class AircraftLayer  {
         heading_deg: state.true_track ?? 0,
         progress: 0,
       }
-      if (!aircraft_map_data) {
-      } 
-     this.aircrafts.set(icao24, aircraft_map_data)
+      this.aircrafts.set(icao24, aircraft_map_data)
 
       this.update_aircraft_object_position(
         aircraft_map_data.object,
@@ -297,5 +295,27 @@ export class AircraftLayer  {
 
     this.update_geojson_src()
     this.map.triggerRepaint()
+  }
+
+  public items_in_bbox() {
+    const bounds = this.map.getBounds()
+    const result = new Set<OpenSkyStateItem['icao24']>()
+
+    for (const [aicraft_id, aircraft_data] of this.aircrafts.entries()) {
+      const new_lon = lerp(
+        aircraft_data.origin_lon,
+        aircraft_data.destination_lon,
+        aircraft_data.progress,
+      )
+      const new_lat = lerp(
+        aircraft_data.origin_lat,
+        aircraft_data.destination_lat,
+        aircraft_data.progress,
+      )
+      if (bounds.contains([new_lon, new_lat])) {
+        result.add(aicraft_id)
+      }
+    }
+    return result
   }
 }

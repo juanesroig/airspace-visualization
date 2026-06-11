@@ -1,3 +1,6 @@
+export function missing_case(missing: never) {
+  throw new TypeError("Missing case on switch case", missing)
+}
 export function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t
 }
