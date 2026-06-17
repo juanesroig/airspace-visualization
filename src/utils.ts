@@ -8,6 +8,9 @@ export function lerp(a: number, b: number, t: number) {
 export function unlerp(a: number, b:number, t: number) {
   return (t - a) / (b - a)
 }
+export function remap(a: number, b: number, c: number, d: number, v: number) {
+  return lerp(c, d, unlerp(a, b, v))
+}
 
 export function deg_to_rad(deg: number) {
   return deg * Math.PI / 180

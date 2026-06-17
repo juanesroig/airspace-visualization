@@ -7,29 +7,77 @@ import maplibregl from 'maplibre-gl'
 import styles from './App.module.css'
 import { missing_case } from "./utils";
 
-type AppProps = {
-  map: maplibregl.Map;
+type AircraftCardProps = { aircraft: OpenSkyStateItem; }
+function AircraftCard({ aircraft }: AircraftCardProps) {
+  const heading_label = (deg: number) => {
+    const dirs = ['N','NE','E','SE','S','SO','O','NO']
+    return dirs[Math.round(deg / 45) % dirs.length]
+  }
+
+  return (
+    <div className={styles['aircraft-card']}>
+      {
+        aircraft.callsign !== null &&
+          <p>{aircraft.callsign}</p>
+      }
+      <p>{aircraft.icao24}</p>
+      <p>{aircraft.origin_country}</p>
+      {
+        aircraft.true_track !== null &&
+          <>
+            <i style={{ transform: `rotate(${aircraft.true_track}deg)` }} />
+          <p>{aircraft.true_track}° {heading_label(aircraft.true_track)}</p>
+          </>
+      }
+      {
+        aircraft.velocity !== null &&
+          <p>{aircraft.velocity} m/s</p>
+      }
+      {
+        aircraft.geo_altitude !== null &&
+          <p>{aircraft.geo_altitude} m</p>
+      }
+    </div>
+  )
 }
+
+type AppProps = { map: maplibregl.Map; }
 function App({map}: AppProps) {
   const [aircrafts_on_screen, set_aircrafts_on_screen] = useState(
     new Set<OpenSkyStateItem['icao24']>()
   )
+  const [
+    selected_aircraft,
+    set_selected_aircraft,
+  ] = useState<OpenSkyStateItem['icao24'] | null>(null)
   const [opensky_state, set_opensky_state] = useAtom(opensky_state_atom)
   const aircrafts_layer_ref = useRef<AircraftLayer | null>(null)
   const latest_opensky_states_ref = useRef<OpenSkyStateItem[]>([])
 
-  useEffect(function get_items_on_screen() {
+  useEffect(function map_events() {
     const handle_map_change = () => {
       if (aircrafts_layer_ref.current === null) return
       set_aircrafts_on_screen(aircrafts_layer_ref.current.items_in_bbox())
     }
     map.on("moveend", handle_map_change)
     map.on("zoomend", handle_map_change)
+
+    const handle_click = (ev: maplibregl.MapMouseEvent) => {
+      if (aircrafts_layer_ref.current === null) return
+      console.log(aircrafts_on_screen)
+      const clicked_aircraft = aircrafts_layer_ref.current.get_clicked_aircraft(
+        ev,
+        aircrafts_on_screen,
+      )
+      set_selected_aircraft(clicked_aircraft)
+    }
+    map.on('click', handle_click)
     return () => {
       map.off("moveend", handle_map_change)
       map.off("zoomend", handle_map_change)
+      map.off('click', handle_click)
     }
-  }, [])
+  }, [aircrafts_on_screen, map])
 
   useEffect(function handle_event_source() {
     const event_source = new EventSource(opensky_url('states'))
@@ -57,7 +105,7 @@ function App({map}: AppProps) {
     return () => {
       event_source.close()
     }
-  }, [])
+  }, [set_opensky_state])
 
   useEffect(function load_aircrafts_layer() {
     const load_layer = () => {
@@ -103,15 +151,12 @@ function App({map}: AppProps) {
       const displayed_aircrafts = opensky_state.payload.filter(state => (
         aircrafts_on_screen.has(state.icao24)
       ))
+      console.log(selected_aircraft)
       return (
         <div className={styles['flights-container']}>
           {
             displayed_aircrafts.map(state => (
-              <article role="button" tabIndex={0} key={state.icao24}>
-                  <div>{state.icao24}</div>
-                  <div>{state.callsign}</div>
-                  <div>{state.origin_country}</div>
-              </article>
+              <AircraftCard key={state.icao24} aircraft={state} />
             ))
           }
         </div>

@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import maplibregl, { GeoJSONSource } from 'maplibre-gl'
 import type { OpenSkyStateItem } from "./api"
-import { deg_to_rad, project_position } from './utils'
+import { deg_to_rad, project_position, remap } from './utils'
 import { lerp } from 'three/src/math/MathUtils.js'
 import { GLTFLoader } from 'three/examples/jsm/Addons.js'
 
@@ -253,6 +253,7 @@ export class AircraftLayer  {
       let aircraft_object = this.aircrafts.get(icao24)?.object
       if (aircraft_object === undefined) {
         aircraft_object = this.model_template.clone(true)
+        aircraft_object.userData.icao24 = icao24
         this.scene.add(aircraft_object)
       }
       const [destination_lon, destination_lat] = project_position(
@@ -317,5 +318,67 @@ export class AircraftLayer  {
       }
     }
     return result
+  }
+
+  private objects_for_ids(ids: Set<OpenSkyStateItem['icao24']>) {
+    const objects: THREE.Object3D[] = []
+    for (const icao24 of ids) {
+      const aircraft = this.aircrafts.get(icao24)
+      if (aircraft !== undefined) {
+        objects.push(aircraft.object)
+      }
+    }
+    return objects
+  }
+
+  public get_clicked_aircraft(
+    ev: maplibregl.MapMouseEvent,
+    candidate_ids?: Set<OpenSkyStateItem['icao24']>,
+  ) {
+    if (this.map.getZoom() > ZOOM_THRESHOLD) {
+      const rect = this.map.getCanvas().getBoundingClientRect();
+      const px = ev.originalEvent.clientX - rect.left;
+      const py = ev.originalEvent.clientY - rect.top;
+
+      const ndx = remap(0, rect.width, -1, 1, px);
+      const ndy = remap(0, rect.height, 1, -1, py);
+
+      const inverse_projection = this.camera.projectionMatrix.clone().invert()
+
+      const near = new THREE.Vector3(ndx, ndy, -1).applyMatrix4(inverse_projection)
+      const far = new THREE.Vector3(ndx, ndy, 1).applyMatrix4(inverse_projection)
+      const direction = far.clone().sub(near).normalize()
+
+      const raycaster = new THREE.Raycaster();
+      raycaster.set(near, direction);
+
+      const targets = candidate_ids !== undefined
+        ? this.objects_for_ids(candidate_ids)
+        : this.scene.children
+      const intersections = raycaster.intersectObjects(targets, true);
+      if (intersections.length === 0) {
+        return null
+      }
+
+      for (const intersection of intersections) {
+        let node: THREE.Object3D | null = intersection.object
+        while (node !== null) {
+          const icao24 = node.userData.icao24 as OpenSkyStateItem['icao24'] | undefined
+          if (icao24 !== undefined) {
+            return icao24
+          }
+          node = node.parent
+        }
+      }
+
+      return null
+    } else {
+      const features = this.map.queryRenderedFeatures(ev.point)
+      if (features.length === 0) {
+        return null
+      }
+      const [aircraft] = features
+      return aircraft.properties.name as OpenSkyStateItem['icao24']
+    }
   }
 }
