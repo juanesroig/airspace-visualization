@@ -7,37 +7,120 @@ import maplibregl from 'maplibre-gl'
 import styles from './App.module.css'
 import { missing_case } from "./utils";
 
+const M_TO_FT = 3.28084
+const MS_TO_KT = 1.94384
+
+const heading_label = (deg: number) => {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO']
+  return dirs[Math.round(deg / 45) % dirs.length]
+}
+
+const integer = (n: number) => Math.round(n).toLocaleString('en-US')
+
+const category_label = (category: number): string | null => {
+  switch (category) {
+    case 2: return 'Light'
+    case 3: return 'Small'
+    case 4: return 'Large'
+    case 5: return 'Heavy / high vortex'
+    case 6: return 'Heavy'
+    case 7: return 'High performance'
+    case 16:
+    case 17:
+    case 18: return 'Ground vehicle'
+    default: return null
+  }
+}
+
+type MetricProps = { label: string; value: string; unit: string; tone?: string; }
+function Metric({ label, value, unit, tone }: MetricProps) {
+  return (
+    <div className={styles.metric}>
+      <span className={styles['metric-label']}>{label}</span>
+      <span className={styles['metric-value']} data-tone={tone}>
+        {value}
+        <span className={styles['metric-unit']}>{unit}</span>
+      </span>
+    </div>
+  )
+}
+
 type AircraftCardProps = { aircraft: OpenSkyStateItem; }
 function AircraftCard({ aircraft }: AircraftCardProps) {
-  const heading_label = (deg: number) => {
-    const dirs = ['N','NE','E','SE','S','SO','O','NO']
-    return dirs[Math.round(deg / 45) % dirs.length]
-  }
+  const altitude = aircraft.geo_altitude ?? aircraft.baro_altitude
+  const category = category_label(aircraft.category)
+
+  const vs = aircraft.vertical_rate
+  const vs_tone = vs === null || Math.abs(vs) < 0.5
+    ? 'level'
+    : vs > 0 ? 'climb' : 'descent'
+  const vs_arrow = vs_tone === 'climb' ? '▲' : vs_tone === 'descent' ? '▼' : '—'
 
   return (
-    <div className={styles['aircraft-card']}>
-      {
-        aircraft.callsign !== null &&
-          <p>{aircraft.callsign}</p>
-      }
-      <p>{aircraft.icao24}</p>
-      <p>{aircraft.origin_country}</p>
-      {
-        aircraft.true_track !== null &&
-          <>
-            <i style={{ transform: `rotate(${aircraft.true_track}deg)` }} />
-          <p>{aircraft.true_track}° {heading_label(aircraft.true_track)}</p>
-          </>
-      }
-      {
-        aircraft.velocity !== null &&
-          <p>{aircraft.velocity} m/s</p>
-      }
-      {
-        aircraft.geo_altitude !== null &&
-          <p>{aircraft.geo_altitude} m</p>
-      }
-    </div>
+    <article
+      className={styles['aircraft-card']}
+      data-onground={aircraft.on_ground}
+    >
+      <header className={styles['card-head']}>
+        <div className={styles['card-id']}>
+          <span className={styles.status} data-onground={aircraft.on_ground}>
+            <span className={styles['status-dot']} />
+            {aircraft.on_ground ? 'On ground' : 'Airborne'}
+          </span>
+          <h2 className={styles.callsign}>
+            {aircraft.callsign?.trim() || 'Unknown'}
+          </h2>
+          <p className={styles['card-sub']}>
+            <span className={styles.icao}>{aircraft.icao24.toUpperCase()}</span>
+            <span className={styles.dot}>·</span>
+            {aircraft.origin_country}
+          </p>
+        </div>
+
+        {aircraft.true_track !== null && (
+          <div className={styles.compass} aria-label={`Track ${Math.round(aircraft.true_track)} degrees`}>
+            <i
+              className={styles.needle}
+              style={{ transform: `rotate(${aircraft.true_track}deg)` }}
+            />
+            <span className={styles['compass-track']}>
+              {Math.round(aircraft.true_track)}°
+            </span>
+            <span className={styles['compass-dir']}>
+              {heading_label(aircraft.true_track)}
+            </span>
+          </div>
+        )}
+      </header>
+
+      <div className={styles.telemetry}>
+        <Metric
+          label="ALT"
+          value={altitude !== null ? integer(altitude * M_TO_FT) : '—'}
+          unit="ft"
+        />
+        <Metric
+          label="GS"
+          value={aircraft.velocity !== null ? integer(aircraft.velocity * MS_TO_KT) : '—'}
+          unit="kt"
+        />
+        <Metric
+          label="V/S"
+          value={vs !== null ? `${vs_arrow} ${integer(Math.abs(vs * M_TO_FT * 60))}` : '—'}
+          unit="fpm"
+          tone={vs_tone}
+        />
+      </div>
+
+      <footer className={styles.tags}>
+        {aircraft.squawk && (
+          <span className={styles.tag}>
+            <span className={styles['tag-key']}>SQ</span>{aircraft.squawk}
+          </span>
+        )}
+        {category && <span className={styles.tag}>{category}</span>}
+      </footer>
+    </article>
   )
 }
 
@@ -151,15 +234,29 @@ function App({map}: AppProps) {
       const displayed_aircrafts = opensky_state.payload.filter(state => (
         aircrafts_on_screen.has(state.icao24)
       ))
-      console.log(selected_aircraft)
+
       return (
-        <div className={styles['flights-container']}>
-          {
-            displayed_aircrafts.map(state => (
-              <AircraftCard key={state.icao24} aircraft={state} />
-            ))
-          }
-        </div>
+        <section className={styles.panel}>
+          <header className={styles['panel-head']}>
+            <span className={styles['panel-pulse']} />
+            <h1 className={styles['panel-title']}>Live traffic</h1>
+            <span className={styles['panel-count']}>
+              {displayed_aircrafts.length}
+              <span className={styles['panel-count-label']}>in view</span>
+            </span>
+          </header>
+          <div className={styles['flights-container']}>
+            {displayed_aircrafts.length === 0 ? (
+              <p className={styles.empty}>
+                No aircraft in view. Pan or zoom the map to track traffic.
+              </p>
+            ) : (
+              displayed_aircrafts.map(state => (
+                <AircraftCard key={state.icao24} aircraft={state} />
+              ))
+            )}
+          </div>
+        </section>
       )
     }
     default: {
