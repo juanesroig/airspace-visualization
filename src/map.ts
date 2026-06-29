@@ -1,16 +1,25 @@
 import * as THREE from 'three'
 import maplibregl, { GeoJSONSource } from 'maplibre-gl'
-import type { OpenSkyStateItem } from "./api"
+import type { OpenSkyStateItem, OpenSkyTrack } from "./api"
 import { deg_to_rad, project_position, remap } from './utils'
 import { lerp } from 'three/src/math/MathUtils.js'
-import { GLTFLoader } from 'three/examples/jsm/Addons.js'
+import { GLTFLoader, Line2, LineGeometry, LineMaterial } from 'three/examples/jsm/Addons.js'
 
 const AIRCRAFTS_ = 'aircrafts_'
 const AIRCRAFTS_SRC = AIRCRAFTS_ + 'src'
+const TRACK_LINE_WIDTH = 3
 const AIRCRAFT_MODEL_URL = '/airplane.glb'
-const AIRCRAFT_SPRITE_URL = '/airplane.png'
+const AIRCRAFT_SPRITE_URL = '/airplane.svg'
+const AIRCRAFT_SPRITE_SIZE = 512
 const ZOOM_THRESHOLD = 7
 const DELTA_MS = 18_000
+
+export const AIRCRAFT_COLOR = '#ffffff'
+export const AIRCRAFT_HOVERED = '#5b9cf0'
+export const AIRCRAFT_SELECTED = '#2563eb'
+
+export const TRACK_COLOR_START = '#5b9cf0'
+export const TRACK_COLOR_END = '#ffffff'
 
 const create_layer_id = (suffix: string) => {
   if (globalThis.crypto?.randomUUID) {
@@ -21,9 +30,18 @@ const create_layer_id = (suffix: string) => {
   return AIRCRAFTS_ + random_suffix
 }
 
+type TrackLine = {
+  line: Line2;
+  waypoints: Array<[lon: number, lat: number, altitude: number]>;
+}
+
+type AircraftTrack = {
+  icao24: OpenSkyStateItem['icao24'];
+  lines: TrackLine[];
+}
+
 type AircraftMapData = {
   object: THREE.Object3D;
-  // TODO: Add values for linear interpolation
   altitude: number;
   heading_deg: number;
   origin_lon: number;
@@ -32,16 +50,20 @@ type AircraftMapData = {
   destination_lat: number;
   updated_at: number;
   progress: number;
+  color: string;
 }
 
 export class AircraftLayer  {
   camera = new THREE.Camera()
   scene = new THREE.Scene()
+  track_scene = new THREE.Scene()
   loader = new GLTFLoader()
   renderer: THREE.WebGLRenderer = {} as THREE.WebGLRenderer
   aircrafts = new Map<string, AircraftMapData>()
   custom_layer_params: maplibregl.CustomLayerInterface
+  track_layer_params: maplibregl.CustomLayerInterface
   symbol_layer_params: maplibregl.SymbolLayerSpecification
+  track: AircraftTrack | null = null
   map: maplibregl.Map
   model_template: THREE.Object3D | null = null
   private model_template_loading: Promise<THREE.Object3D> | null = null
@@ -53,12 +75,7 @@ export class AircraftLayer  {
       type: 'custom',
       renderingMode: '3d',
       onAdd: (current_map, gl) => {
-        this.renderer = new THREE.WebGLRenderer({
-          canvas: current_map.getCanvas(),
-          context: gl,
-          antialias: true,
-        })
-        this.renderer.autoClear = false
+        this.ensure_renderer(current_map.getCanvas(), gl)
         this.add_lights()
         this.load_model_template()
       },
@@ -70,7 +87,6 @@ export class AircraftLayer  {
 
         for (const [id, aircraft] of this.aircrafts.entries()) {
           const progress = aircraft.progress + dt / DELTA_MS
-          // TODO: If progress > 1, recompute new destination coords
           const new_lon = lerp(aircraft.origin_lon, aircraft.destination_lon, progress)
           const new_lat = lerp(aircraft.origin_lat, aircraft.destination_lat, progress)
           this.update_aircraft_object_position(
@@ -91,6 +107,22 @@ export class AircraftLayer  {
         this.map.triggerRepaint()
       }
     }
+    this.track_layer_params = {
+      id: create_layer_id('track'),
+      type: 'custom',
+      renderingMode: '3d',
+      onAdd: (current_map, gl) => {
+        this.ensure_renderer(current_map.getCanvas(), gl)
+      },
+      render: (_gl, args) => {
+        if (this.track === null) return
+        this.camera.projectionMatrix = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix)
+        this.update_track_geometry()
+        this.renderer.resetState()
+        this.renderer.render(this.track_scene, this.camera)
+        this.map.triggerRepaint()
+      }
+    }
     this.symbol_layer_params = {
       id: create_layer_id('symbol'),
       type: 'symbol',
@@ -104,7 +136,7 @@ export class AircraftLayer  {
         'icon-allow-overlap': true,
       },
       paint: {
-        'icon-color': '#ffffff',
+        'icon-color': ['get', 'color'],
       },
       maxzoom: ZOOM_THRESHOLD,
     }
@@ -129,6 +161,7 @@ export class AircraftLayer  {
             name: icao24,
             altitude: state.altitude,
             true_track: state.heading_deg,
+            color: state.color,
           }
         }))
       }
@@ -142,6 +175,114 @@ export class AircraftLayer  {
       const geojson = this.aircrafts_to_geojson();
       (source as GeoJSONSource).setData(geojson.data)
     }
+  }
+
+  private build_track_line(
+    waypoints: [lon: number, lat: number, altitude: number][],
+  ): Line2 {
+    const start = new THREE.Color(TRACK_COLOR_START)
+    const end = new THREE.Color(TRACK_COLOR_END)
+    const colors: number[] = []
+    for (let i = 0; i < waypoints.length; i++) {
+      const t = i / (waypoints.length - 1)
+      const color = start.clone().lerp(end, t)
+      colors.push(color.r, color.g, color.b)
+    }
+
+    const geometry = new LineGeometry()
+    geometry.setPositions(new Array(waypoints.length * 3).fill(0))
+    geometry.setColors(colors)
+
+    const material = new LineMaterial({
+      linewidth: TRACK_LINE_WIDTH,
+      vertexColors: true,
+      worldUnits: false,
+    })
+
+    const line = new Line2(geometry, material)
+    line.matrixAutoUpdate = false
+    line.frustumCulled = false
+    return line
+  }
+
+  private update_track_geometry() {
+    if (this.track === null) {
+      return
+    }
+
+    const canvas = this.map.getCanvas()
+    const model_matrix = new THREE.Matrix4()
+    const world_position = new THREE.Vector3()
+
+    for (const { line, waypoints } of this.track.lines) {
+      const positions: number[] = []
+      for (const [lon, lat, altitude] of waypoints) {
+        model_matrix.fromArray(
+          this.map.transform.getMatrixForModel([lon, lat], Math.max(altitude, 0)),
+        )
+        world_position.setFromMatrixPosition(model_matrix)
+        positions.push(world_position.x, world_position.y, world_position.z)
+      }
+      line.geometry.setPositions(positions);
+      line.material.resolution.set(canvas.width, canvas.height)
+    }
+  }
+
+  public update_tracks(tracks: OpenSkyTrack[]) {
+    this.clear_tracks()
+
+    if (tracks.length === 0) {
+      return
+    }
+
+    const lines: TrackLine[] = []
+
+    for (const track of tracks) {
+      const waypoints: [lon: number, lat: number, altitude: number][] = []
+      for (const waypoint of track.path) {
+        if (waypoint.longitude !== null && waypoint.latitude !== null) {
+          waypoints.push([waypoint.longitude, waypoint.latitude, waypoint.baro_altitude ?? 0])
+        }
+      }
+
+      if (waypoints.length < 2) {
+        continue
+      }
+
+      waypoints.push([...waypoints[waypoints.length - 1]])
+
+      const line = this.build_track_line(waypoints)
+      this.track_scene.add(line)
+      lines.push({ line, waypoints })
+    }
+
+    this.track = { icao24: tracks[0].icao24, lines }
+    this.map.triggerRepaint()
+  }
+
+  public clear_tracks() {
+    if (this.track === null) {
+      return
+    }
+    for (const { line } of this.track.lines) {
+      this.track_scene.remove(line)
+      line.geometry.dispose()
+      line.material.dispose()
+    }
+    this.track = null
+    this.map.triggerRepaint()
+  }
+
+  private ensure_renderer(canvas: HTMLCanvasElement, gl: WebGL2RenderingContext | WebGLRenderingContext) {
+    if (this.renderer instanceof THREE.WebGLRenderer) {
+      return
+    }
+    this.renderer = new THREE.WebGLRenderer({
+      canvas,
+      context: gl,
+      antialias: true,
+    })
+    this.renderer.autoClear = false
   }
 
   private add_lights() {
@@ -222,14 +363,88 @@ export class AircraftLayer  {
     aircraft_object.matrixAutoUpdate = false
     aircraft_object.matrix.copy(aircraft_matrix)
     aircraft_object.updateMatrixWorld(true)
+
+    if (this.track === null || aircraft_object.userData.icao24 !== this.track.icao24) {
+      return
+    }
+    for (const { waypoints } of this.track.lines) {
+      if (waypoints.length > 0) {
+        waypoints[waypoints.length - 1] = [x, y, z]
+      }
+    }
+  }
+
+  private clone_aircraft_object(template: THREE.Object3D) {
+    const object = template.clone(true)
+    object.traverse(node => {
+      if (node instanceof THREE.Mesh) {
+        node.material = Array.isArray(node.material)
+          ? node.material.map(material => material.clone())
+          : node.material.clone()
+      }
+    })
+    return object
+  }
+
+  private apply_object_color(object: THREE.Object3D, color: string) {
+    const three_color = new THREE.Color(color)
+    object.traverse(node => {
+      if (node instanceof THREE.Mesh) {
+        const materials = Array.isArray(node.material) ? node.material : [node.material]
+        for (const material of materials) {
+          if ('color' in material && material.color instanceof THREE.Color) {
+            material.color.copy(three_color)
+          }
+        }
+      }
+    })
+  }
+
+  public change_aircraft_color(
+    icao24: OpenSkyStateItem['icao24'],
+    color: string,
+  ) {
+    const aircraft = this.aircrafts.get(icao24)
+    if (aircraft === undefined) {
+      return
+    }
+    aircraft.color = color
+    this.apply_object_color(aircraft.object, color)
+    this.update_geojson_src()
+    this.map.triggerRepaint()
+  }
+
+  private load_sprite_image(): Promise<ImageData> {
+    return new Promise((resolve, reject) => {
+      const image = new Image()
+      image.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = AIRCRAFT_SPRITE_SIZE
+        canvas.height = AIRCRAFT_SPRITE_SIZE
+        const ctx = canvas.getContext('2d')
+        if (ctx === null) {
+          reject(new Error('Could not get 2D canvas context for aircraft sprite'))
+          return
+        }
+        ctx.drawImage(image, 0, 0, AIRCRAFT_SPRITE_SIZE, AIRCRAFT_SPRITE_SIZE)
+        resolve(ctx.getImageData(0, 0, AIRCRAFT_SPRITE_SIZE, AIRCRAFT_SPRITE_SIZE))
+      }
+      image.onerror = () => reject(new Error('Could not load aircraft sprite SVG'))
+      image.src = AIRCRAFT_SPRITE_URL
+    })
   }
 
   init() {
+    // Track layer goes in first so it renders beneath the aircraft (3D models
+    // and 2D sprites) at every zoom level.
+    this.map.addLayer(this.track_layer_params)
     this.map.addLayer(this.custom_layer_params)
-    this.map.loadImage(AIRCRAFT_SPRITE_URL).then(image => {
+    this.load_sprite_image().then(image_data => {
       this.map.addSource(AIRCRAFTS_SRC, this.aircrafts_to_geojson())
-      this.map.addImage('airplane', image.data)
+      this.map.addImage('airplane', image_data)
       this.map.addLayer(this.symbol_layer_params)
+    }).catch(error => {
+      console.error('Could not initialize aircraft sprite', error)
     })
   }
 
@@ -250,17 +465,20 @@ export class AircraftLayer  {
       const icao24 = state.icao24.trim()
       active_icao24.add(icao24)
 
-      let aircraft_object = this.aircrafts.get(icao24)?.object
+      const existing = this.aircrafts.get(icao24)
+      let aircraft_object = existing?.object
+      const color = existing?.color ?? AIRCRAFT_COLOR
       if (aircraft_object === undefined) {
-        aircraft_object = this.model_template.clone(true)
+        aircraft_object = this.clone_aircraft_object(this.model_template)
         aircraft_object.userData.icao24 = icao24
+        this.apply_object_color(aircraft_object, color)
         this.scene.add(aircraft_object)
       }
       const [destination_lon, destination_lat] = project_position(
         state.longitude,
         state.latitude,
-        state.true_track ?? 0, // FIXME:
-        state.velocity ?? 0, // FIXME:
+        state.true_track ?? 0,
+        state.velocity ?? 0,
         DELTA_MS / 1000,
       )
       const aircraft_map_data = {
@@ -273,6 +491,7 @@ export class AircraftLayer  {
         altitude: state.geo_altitude ?? 0,
         heading_deg: state.true_track ?? 0,
         progress: 0,
+        color,
       }
       this.aircrafts.set(icao24, aircraft_map_data)
 
@@ -320,6 +539,19 @@ export class AircraftLayer  {
     return result
   }
 
+  public aircraft_position(
+    icao24: OpenSkyStateItem['icao24'],
+  ): [lon: number, lat: number] | null {
+    const aircraft = this.aircrafts.get(icao24)
+    if (aircraft === undefined) {
+      return null
+    }
+    return [
+      lerp(aircraft.origin_lon, aircraft.destination_lon, aircraft.progress),
+      lerp(aircraft.origin_lat, aircraft.destination_lat, aircraft.progress),
+    ]
+  }
+
   private objects_for_ids(ids: Set<OpenSkyStateItem['icao24']>) {
     const objects: THREE.Object3D[] = []
     for (const icao24 of ids) {
@@ -331,7 +563,7 @@ export class AircraftLayer  {
     return objects
   }
 
-  public get_clicked_aircraft(
+  public detect_mouse_on_aircraft(
     ev: maplibregl.MapMouseEvent,
     candidate_ids?: Set<OpenSkyStateItem['icao24']>,
   ) {

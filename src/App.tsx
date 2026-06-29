@@ -1,14 +1,25 @@
-import { useAtom } from "jotai";
-import { LoadingStateStatus, opensky_loading_states, opensky_state_atom } from "./state";
-import { useEffect, useRef, useState } from "react";
-import { OPEN_SKY_STATES_PAYLOAD_COLUMNS, opensky_url, type OpenSkyStateItem, type OpenSkyStatesPayload } from "./api";
-import { AircraftLayer } from "./map";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  OPEN_SKY_STATES_PAYLOAD_COLUMNS,
+  OpenSkyApi,
+  decode_tuple,
+  opensky_url,
+  type OpenSkyStateItem,
+  type OpenSkyStatesPayload,
+} from "./api";
+import { AircraftLayer, AIRCRAFT_COLOR, AIRCRAFT_HOVERED, AIRCRAFT_SELECTED } from "./map";
 import maplibregl from 'maplibre-gl'
 import styles from './App.module.css'
-import { missing_case } from "./utils";
+import {
+  LoadingStateStatus,
+  make_loading_states,
+  missing_case,
+  type InferLoadingState,
+} from "./utils";
 
 const M_TO_FT = 3.28084
 const MS_TO_KT = 1.94384
+const CARD_BATCH_SIZE = 20
 
 const heading_label = (deg: number) => {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO']
@@ -45,8 +56,14 @@ function Metric({ label, value, unit, tone }: MetricProps) {
   )
 }
 
-type AircraftCardProps = { aircraft: OpenSkyStateItem; }
-function AircraftCard({ aircraft }: AircraftCardProps) {
+type AircraftCardProps = {
+  aircraft: OpenSkyStateItem;
+  selected: boolean;
+  hovered: boolean;
+  on_hover: (icao24: OpenSkyStateItem['icao24'] | null) => void;
+  on_select: (icao24: OpenSkyStateItem['icao24']) => void;
+}
+function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: AircraftCardProps) {
   const altitude = aircraft.geo_altitude ?? aircraft.baro_altitude
   const category = category_label(aircraft.category)
 
@@ -60,6 +77,11 @@ function AircraftCard({ aircraft }: AircraftCardProps) {
     <article
       className={styles['aircraft-card']}
       data-onground={aircraft.on_ground}
+      data-selected={selected}
+      data-hovered={hovered}
+      onMouseEnter={() => on_hover(aircraft.icao24)}
+      onMouseLeave={() => on_hover(null)}
+      onClick={() => on_select(aircraft.icao24)}
     >
       <header className={styles['card-head']}>
         <div className={styles['card-id']}>
@@ -124,43 +146,135 @@ function AircraftCard({ aircraft }: AircraftCardProps) {
   )
 }
 
+const opensky_loading_states = make_loading_states<OpenSkyStateItem[], string>()
+type OpenSkyState = InferLoadingState<typeof opensky_loading_states>
+
 type AppProps = { map: maplibregl.Map; }
 function App({map}: AppProps) {
   const [aircrafts_on_screen, set_aircrafts_on_screen] = useState(
     new Set<OpenSkyStateItem['icao24']>()
   )
   const [
+    hovered_aircraft,
+    set_hovered_aircraft,
+  ] = useState<OpenSkyStateItem['icao24'] | null>(null)
+  const [
     selected_aircraft,
     set_selected_aircraft,
   ] = useState<OpenSkyStateItem['icao24'] | null>(null)
-  const [opensky_state, set_opensky_state] = useAtom(opensky_state_atom)
+  const [max_displayed_cards, set_max_displayed_cards] = useState(CARD_BATCH_SIZE)
+  const [opensky_state, set_opensky_state] = useState<OpenSkyState>(
+    opensky_loading_states.NOT_STARTED()
+  )
   const aircrafts_layer_ref = useRef<AircraftLayer | null>(null)
   const latest_opensky_states_ref = useRef<OpenSkyStateItem[]>([])
+  const flights_container_ref = useRef<HTMLDivElement | null>(null)
 
-  useEffect(function map_events() {
+  const update_hovered_aircraft = useCallback(
+    (hovered: OpenSkyStateItem['icao24'] | null) => {
+      const layer = aircrafts_layer_ref.current
+      set_hovered_aircraft(previous_hovered => {
+        if (previous_hovered === hovered || layer === null) {
+          return hovered
+        }
+        if (previous_hovered !== null && previous_hovered !== selected_aircraft) {
+          layer.change_aircraft_color(previous_hovered, AIRCRAFT_COLOR)
+        }
+        if (hovered !== null && hovered !== selected_aircraft) {
+          layer.change_aircraft_color(hovered, AIRCRAFT_HOVERED)
+        }
+        return hovered
+      })
+      map.getCanvas().style.cursor = hovered !== null ? "pointer" : ""
+    },
+    [map, selected_aircraft]
+  )
+
+  const update_selected_aircraft = useCallback(
+    (selected: OpenSkyStateItem['icao24'] | null) => {
+      const layer = aircrafts_layer_ref.current
+      if (layer === null) return
+      set_selected_aircraft(previous_selected => {
+        if (previous_selected !== null) {
+          layer.change_aircraft_color(
+            previous_selected,
+            previous_selected === hovered_aircraft ? AIRCRAFT_HOVERED : AIRCRAFT_COLOR,
+          )
+        }
+        if (selected !== null) {
+          layer.change_aircraft_color(selected, AIRCRAFT_SELECTED)
+          const position = layer.aircraft_position(selected)
+          if (position !== null) {
+            map.flyTo({ center: position, zoom: 9 })
+          }
+          flights_container_ref.current?.scrollTo({ top: 0, behavior: 'smooth' })
+        }
+        return selected
+      })
+      if (selected !== null) {
+        void OpenSkyApi.get_tracks(selected).then(result => {
+          if (result.success) {
+            aircrafts_layer_ref.current?.update_tracks([result.payload])
+          } else {
+            console.error('failed to fetch tracks', selected, result.error)
+          }
+        })
+      } else {
+        layer.clear_tracks()
+      }
+    },
+    [hovered_aircraft, map]
+  )
+
+  const handle_scroll = (ev: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, clientHeight, scrollHeight } = ev.currentTarget
+    if (scrollTop + clientHeight >= scrollHeight - 1) {
+      set_max_displayed_cards(previous => previous + CARD_BATCH_SIZE)
+    }
+  }
+
+  useEffect(function map_change_events() {
     const handle_map_change = () => {
       if (aircrafts_layer_ref.current === null) return
       set_aircrafts_on_screen(aircrafts_layer_ref.current.items_in_bbox())
     }
     map.on("moveend", handle_map_change)
     map.on("zoomend", handle_map_change)
+    return () => {
+      map.off('moveend', handle_map_change)
+      map.off('zoomend', handle_map_change)
+    }
+  }, [map])
 
+  useEffect(function click_events() {
     const handle_click = (ev: maplibregl.MapMouseEvent) => {
       if (aircrafts_layer_ref.current === null) return
-      console.log(aircrafts_on_screen)
-      const clicked_aircraft = aircrafts_layer_ref.current.get_clicked_aircraft(
+      const clicked_aircraft = aircrafts_layer_ref.current.detect_mouse_on_aircraft(
         ev,
         aircrafts_on_screen,
       )
-      set_selected_aircraft(clicked_aircraft)
+      update_selected_aircraft(clicked_aircraft)
     }
     map.on('click', handle_click)
     return () => {
-      map.off("moveend", handle_map_change)
-      map.off("zoomend", handle_map_change)
       map.off('click', handle_click)
     }
-  }, [aircrafts_on_screen, map])
+  }, [aircrafts_on_screen, map, update_selected_aircraft])
+
+  useEffect(function hover_events() {
+    const handle_mouseover = (ev: maplibregl.MapMouseEvent) => {
+      if (aircrafts_layer_ref.current === null) return
+      const hovered_aircraft = aircrafts_layer_ref.current.detect_mouse_on_aircraft(
+        ev,
+        aircrafts_on_screen,
+      )
+      update_hovered_aircraft(hovered_aircraft)
+    }
+    map.on('mousemove', handle_mouseover)
+    return () => {
+      map.off('mousemove', handle_mouseover)
+    }
+  }, [aircrafts_on_screen, map, update_hovered_aircraft])
 
   useEffect(function handle_event_source() {
     const event_source = new EventSource(opensky_url('states'))
@@ -169,12 +283,9 @@ function App({map}: AppProps) {
     })
     event_source.addEventListener("success", (event: MessageEvent<string>) => {
       const states = JSON.parse(event.data).states as OpenSkyStatesPayload['states']
-      const parsed_data = states.map(raw_state => (
-        Object.fromEntries(raw_state.map((value, index) => [
-          OPEN_SKY_STATES_PAYLOAD_COLUMNS[index],
-          value
-        ]))
-      )) as OpenSkyStateItem[]
+      const parsed_data = states.map(raw_state =>
+        decode_tuple<OpenSkyStateItem>(raw_state, OPEN_SKY_STATES_PAYLOAD_COLUMNS)
+      )
       latest_opensky_states_ref.current = parsed_data
       set_opensky_state(opensky_loading_states.SUCCESS(parsed_data))
       if (aircrafts_layer_ref.current !== null) {
@@ -231,9 +342,14 @@ function App({map}: AppProps) {
       )
     }
     case LoadingStateStatus.success:  {
-      const displayed_aircrafts = opensky_state.payload.filter(state => (
-        aircrafts_on_screen.has(state.icao24)
-      ))
+      const displayed_aircrafts = opensky_state.payload
+        .filter(state => aircrafts_on_screen.has(state.icao24))
+        .sort((a, b) => {
+          if (a.icao24 === selected_aircraft) return -1
+          if (b.icao24 === selected_aircraft) return 1
+          return 0
+        })
+      const lazy_loaded_aircrafts = displayed_aircrafts.toSpliced(max_displayed_cards)
 
       return (
         <section className={styles.panel}>
@@ -245,14 +361,25 @@ function App({map}: AppProps) {
               <span className={styles['panel-count-label']}>in view</span>
             </span>
           </header>
-          <div className={styles['flights-container']}>
+          <div
+            ref={flights_container_ref}
+            className={styles['flights-container']}
+            onScroll={handle_scroll}
+          >
             {displayed_aircrafts.length === 0 ? (
               <p className={styles.empty}>
                 No aircraft in view. Pan or zoom the map to track traffic.
               </p>
             ) : (
-              displayed_aircrafts.map(state => (
-                <AircraftCard key={state.icao24} aircraft={state} />
+              lazy_loaded_aircrafts.map(state => (
+                <AircraftCard
+                  key={state.icao24}
+                  aircraft={state}
+                  selected={selected_aircraft === state.icao24}
+                  hovered={hovered_aircraft === state.icao24}
+                  on_hover={update_hovered_aircraft}
+                  on_select={update_selected_aircraft}
+                />
               ))
             )}
           </div>

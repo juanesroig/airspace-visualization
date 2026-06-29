@@ -84,7 +84,9 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
-  transition: border-color 0.18s ease, transform 0.18s ease;
+  cursor: pointer;
+  transition: border-color 0.18s ease, transform 0.18s ease,
+    box-shadow 0.18s ease, background 0.18s ease;
 }
 
 .aircraft-card::before {
@@ -102,9 +104,22 @@
   box-shadow: none;
 }
 
-.aircraft-card:hover {
+.aircraft-card:hover,
+.aircraft-card[data-hovered='true'] {
   border-color: var(--border-strong);
   transform: translateX(0.125rem);
+}
+
+/* Avión seleccionado: resaltado con el color de acento de la UI. */
+.aircraft-card[data-selected='true'] {
+  border-color: var(--primary);
+  background: var(--surface-3);
+  box-shadow: var(--glow-primary);
+}
+
+.aircraft-card[data-selected='true']::before {
+  width: 0.3125rem;
+  background: var(--primary-bright);
 }
 
 .card-head {
