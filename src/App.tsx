@@ -11,6 +11,7 @@ import { AircraftLayer, AIRCRAFT_COLOR, AIRCRAFT_HOVERED, AIRCRAFT_SELECTED } fr
 import maplibregl from 'maplibre-gl'
 import styles from './App.module.css'
 import {
+    deg_to_rad,
   LoadingStateStatus,
   make_loading_states,
   missing_case,
@@ -20,11 +21,6 @@ import {
 const M_TO_FT = 3.28084
 const MS_TO_KT = 1.94384
 const CARD_BATCH_SIZE = 20
-
-const heading_label = (deg: number) => {
-  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO']
-  return dirs[Math.round(deg / 45) % dirs.length]
-}
 
 const integer = (n: number) => Math.round(n).toLocaleString('en-US')
 
@@ -41,6 +37,112 @@ const category_label = (category: number): string | null => {
     case 18: return 'Ground vehicle'
     default: return null
   }
+}
+
+type CompassProps = {
+  head: number;
+}
+
+const COMPASS = {
+  center: 50,
+  ring_radius: 47,
+  tick_outer: 46,
+  tick_inner: 41,
+  tick_inner_cardinal: 38,
+  cardinal_radius: 31,
+  needle_tip: 37,
+  needle_base: 17,
+  needle_half_width: 4.5,
+  value_baseline: 52,
+} as const
+
+const COMPASS_TICKS = Array.from({ length: 12 }, (_, i) => i * 30)
+const COMPASS_CARDINALS = [
+  { label: 'N', angle: 0 },
+  { label: 'E', angle: 90 },
+  { label: 'S', angle: 180 },
+  { label: 'W', angle: 270 },
+]
+
+const compass_point = (angle: number, radius: number) => {
+  const rad = deg_to_rad(angle)
+  return {
+    x: COMPASS.center + radius * Math.sin(rad),
+    y: COMPASS.center - radius * Math.cos(rad),
+  }
+}
+
+const COMPASS_NEEDLE_POINTS = [
+  `${COMPASS.center},${COMPASS.center - COMPASS.needle_tip}`,
+  `${COMPASS.center - COMPASS.needle_half_width},${COMPASS.center - COMPASS.needle_base}`,
+  `${COMPASS.center + COMPASS.needle_half_width},${COMPASS.center - COMPASS.needle_base}`,
+].join(' ')
+
+function Compass({ head }: CompassProps) {
+  return (
+    <svg
+      className={styles.compass}
+      viewBox="0 0 100 100"
+      role="img"
+      aria-label={`Track ${Math.round(head)} degrees`}
+    >
+      <circle
+        className={styles['compass-ring']}
+        cx={COMPASS.center}
+        cy={COMPASS.center}
+        r={COMPASS.ring_radius}
+      />
+
+      {COMPASS_TICKS.map(angle => {
+        const is_cardinal = angle % 90 === 0
+        const inner = compass_point(
+          angle,
+          is_cardinal ? COMPASS.tick_inner_cardinal : COMPASS.tick_inner,
+        )
+        const outer = compass_point(angle, COMPASS.tick_outer)
+        return (
+          <line
+            key={angle}
+            className={is_cardinal ? styles['compass-tick-major'] : styles['compass-tick']}
+            x1={inner.x}
+            y1={inner.y}
+            x2={outer.x}
+            y2={outer.y}
+          />
+        )
+      })}
+
+      {COMPASS_CARDINALS.map(({ label, angle }) => {
+        const p = compass_point(angle, COMPASS.cardinal_radius)
+        return (
+          <text
+            key={label}
+            className={label === 'N' ? styles['compass-north'] : styles['compass-cardinal']}
+            x={p.x}
+            y={p.y}
+            textAnchor="middle"
+            dominantBaseline="central"
+          >
+            {label}
+          </text>
+        )
+      })}
+      <polygon
+        className={styles['compass-needle']}
+        points={COMPASS_NEEDLE_POINTS}
+        transform={`rotate(${head} ${COMPASS.center} ${COMPASS.center})`}
+      />
+      <text
+        className={styles['compass-value']}
+        x={COMPASS.center}
+        y={COMPASS.value_baseline}
+        textAnchor="middle"
+        dominantBaseline="central"
+      >
+        {Math.round(head)}°
+      </text>
+    </svg>
+  )
 }
 
 type MetricProps = { label: string; value: string; unit: string; tone?: string; }
@@ -100,18 +202,7 @@ function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: Airc
         </div>
 
         {aircraft.true_track !== null && (
-          <div className={styles.compass} aria-label={`Track ${Math.round(aircraft.true_track)} degrees`}>
-            <i
-              className={styles.needle}
-              style={{ transform: `rotate(${aircraft.true_track}deg)` }}
-            />
-            <span className={styles['compass-track']}>
-              {Math.round(aircraft.true_track)}°
-            </span>
-            <span className={styles['compass-dir']}>
-              {heading_label(aircraft.true_track)}
-            </span>
-          </div>
+          <Compass head={aircraft.true_track} />
         )}
       </header>
 

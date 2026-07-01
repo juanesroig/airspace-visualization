@@ -194,51 +194,61 @@
 }
 
 .compass {
-  position: relative;
   flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 3.5rem;
-  height: 3.5rem;
-  border-radius: 50%;
-  background: var(--surface-1);
-  border: 1px solid var(--border-strong);
-}
-
-.needle {
-  position: absolute;
-  inset: 0;
+  width: 4.75rem;
+  height: 4.75rem;
+  overflow: visible;
   pointer-events: none;
 }
 
-.needle::before {
-  content: '';
-  position: absolute;
-  top: 0.1875rem;
-  left: 50%;
-  transform: translateX(-50%);
-  border-left: 0.3125rem solid transparent;
-  border-right: 0.3125rem solid transparent;
-  border-bottom: 0.5rem solid var(--primary);
-  filter: drop-shadow(0 0 0.25rem var(--primary-dim));
+.compass-ring {
+  fill: var(--surface-1);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
 }
 
-.compass-track {
+.compass-tick {
+  stroke: var(--text-faint);
+  stroke-width: 1;
+}
+
+.compass-tick-major {
+  stroke: var(--text-muted);
+  stroke-width: 1.75;
+}
+
+.compass-cardinal {
+  fill: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: 13px;
   font-weight: 600;
-  line-height: 1;
-  color: var(--text-default);
+}
+
+.compass-north {
+  fill: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.compass-needle {
+  fill: var(--primary);
+  filter: drop-shadow(0 0 2px var(--primary-dim));
+}
+
+.compass-value {
+  fill: var(--text-default);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .compass-dir {
-  margin-top: 0.125rem;
-  font-size: 0.625rem;
+  fill: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 9px;
   font-weight: 600;
   letter-spacing: var(--tracking-wide);
-  color: var(--primary);
 }
 
 .telemetry {

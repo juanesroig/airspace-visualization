@@ -1,13 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 :root {
-  /* ----------------------------------------------------------------
-     Design system — "Glass Cockpit"
-     Dark-mode GIS / real-time airspace visualizer.
-     Palette grounded in avionics EFIS displays read at night.
-     Colors in rgb (no opacity), sizes in rem.
-  ---------------------------------------------------------------- */
-
   /* --- Backgrounds & elevations --- */
   --bg: rgb(7, 11, 16);            /* base — deepest, the night chart */
   --surface-1: rgb(13, 19, 27);    /* elevation 1 — panels */
