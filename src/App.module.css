@@ -56,10 +56,10 @@
 .flights-container {
   display: flex;
   flex-direction: column;
-  gap: var(--sp3);
+  gap: var(--sp2);
   overflow: auto;
   height: 100%;
-  padding: var(--sp3) var(--sp4) var(--sp4);
+  padding: var(--sp2) var(--sp3) var(--sp3);
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
@@ -78,8 +78,8 @@
   display: flex;
   flex-direction: column;
   flex: none;
-  gap: var(--sp3);
-  padding: var(--sp3) var(--sp4) var(--sp4);
+  gap: var(--sp2);
+  padding: var(--sp3);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -163,7 +163,7 @@
 .callsign {
   margin: var(--sp1) 0 0;
   font-family: var(--font-mono);
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   font-weight: 700;
   letter-spacing: 0.02em;
   line-height: 1.1;
@@ -183,6 +183,12 @@
 }
 
 .icao {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--text-default);
+}
+
+.squawk {
   font-family: var(--font-mono);
   font-weight: 500;
   color: var(--text-default);
@@ -265,7 +271,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp1);
-  padding: var(--sp2) var(--sp3);
+  padding: var(--sp2);
   background: var(--surface-3);
 }
 
@@ -325,14 +331,123 @@
   color: var(--text-faint);
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp5);
+  background:rgba(7, 11, 16, 0.85);
+}
+
+.scope {
+  position: relative;
+  width: 9rem;
+  height: 9rem;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-1);
+  box-shadow: var(--glow-primary), inset 0 0 2rem rgb(3, 6, 10);
+  overflow: hidden;
+}
+
+.scope-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    transparent 270deg,
+    var(--primary-dim) 340deg,
+    var(--primary) 360deg
+  );
+  opacity: 0.75;
+  animation: sweep 2.4s linear infinite;
+}
+
+@keyframes sweep {
+  to { transform: rotate(360deg); }
+}
+
+.scope-grid {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.scope-grid circle {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 0.75;
+}
+
+.scope-grid line {
+  stroke: var(--border-strong);
+  stroke-width: 0.5;
+}
+
+.scope-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin: -0.25rem 0 0 -0.25rem;
+  border-radius: 50%;
+  background: var(--primary-bright);
+  box-shadow: var(--glow-primary);
+}
+
+.loading-copy {
+  text-align: center;
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  color: var(--text-default);
+}
+
+.loading-sub {
+  margin: var(--sp2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-faint);
+}
+
+.error-mark {
+  width: 5rem;
+  height: 5rem;
+  fill: none;
+  stroke: var(--descent);
+  stroke-width: 4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 0.6rem rgba(245, 110, 120, 0.45));
+}
+
+.error-mark circle {
+  fill: var(--descent);
+  stroke: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .panel-pulse,
-  .status-dot {
+  .status-dot,
+  .scope-core {
+    animation: none;
+  }
+  .scope-sweep {
+    animation: none;
+    opacity: 0.5;
+  }
+  .loading-overlay {
     animation: none;
   }
   .aircraft-card {

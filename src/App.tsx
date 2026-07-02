@@ -196,6 +196,14 @@ function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: Airc
           </h2>
           <p className={styles['card-sub']}>
             <span className={styles.icao}>{aircraft.icao24.toUpperCase()}</span>
+            {aircraft.squawk && (
+              <>
+                <span className={styles.dot}>·</span>
+                <span className={styles.squawk}>
+                  <span className={styles['tag-key']}>SQ</span> {aircraft.squawk}
+                </span>
+              </>
+            )}
             <span className={styles.dot}>·</span>
             {aircraft.origin_country}
           </p>
@@ -226,14 +234,52 @@ function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: Airc
       </div>
 
       <footer className={styles.tags}>
-        {aircraft.squawk && (
-          <span className={styles.tag}>
-            <span className={styles['tag-key']}>SQ</span>{aircraft.squawk}
-          </span>
-        )}
         {category && <span className={styles.tag}>{category}</span>}
       </footer>
     </article>
+  )
+}
+
+const SCOPE_RINGS = [48, 34, 20]
+
+function LoadingOverlay() {
+  return (
+    <div className={styles['loading-overlay']}>
+      <div className={styles.scope}>
+        <div className={styles['scope-sweep']} />
+        <svg className={styles['scope-grid']} viewBox="0 0 100 100" aria-hidden="true">
+          {SCOPE_RINGS.map(r => (
+            <circle key={r} cx={50} cy={50} r={r} />
+          ))}
+          <line x1={50} y1={2} x2={50} y2={98} />
+          <line x1={2} y1={50} x2={98} y2={50} />
+        </svg>
+        <span className={styles['scope-core']} />
+      </div>
+      <div className={styles['loading-copy']}>
+        Connecting to live traffic
+      </div>
+    </div>
+  )
+}
+
+function ErrorOverlay({ message }: { message: string }) {
+  return (
+    <div className={styles['loading-overlay']}>
+      <svg
+        className={styles['error-mark']}
+        viewBox="0 0 100 100"
+        role="img"
+        aria-label="Connection error"
+      >
+        <path d="M50 14 L92 84 L8 84 Z" />
+        <line x1={50} y1={42} x2={50} y2={64} />
+        <circle cx={50} cy={74} r={2.5} />
+      </svg>
+      <div className={styles['loading-copy']}>
+        {message}
+      </div>
+    </div>
   )
 }
 
@@ -386,6 +432,11 @@ function App({map}: AppProps) {
     })
     event_source.addEventListener("error", (event) => {
       console.error("sse error", event)
+      set_opensky_state(previous =>
+        previous.status === LoadingStateStatus.success
+          ? previous
+          : opensky_loading_states.ERROR("Couldn't connect to live traffic")
+      )
     })
     return () => {
       event_source.close()
@@ -413,24 +464,12 @@ function App({map}: AppProps) {
   }, [map])
 
   switch (opensky_state.status) {
-    case LoadingStateStatus.not_started: {
-      return
-    }
+    case LoadingStateStatus.not_started:
     case LoadingStateStatus.loading: {
-      return (
-        <div>
-          Loading...
-          {/* TODO: */}
-        </div>
-      )
+      return <LoadingOverlay />
     }
     case LoadingStateStatus.error: {
-      return (
-        <div>
-          Error page
-          {/* TODO: */}
-        </div>
-      )
+      return <ErrorOverlay message={opensky_state.error} />
     }
     case LoadingStateStatus.success:  {
       const displayed_aircrafts = opensky_state.payload

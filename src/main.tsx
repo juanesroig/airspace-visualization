@@ -13,8 +13,9 @@ const token = (name: string, fallback: string) =>
 const map = new maplibregl.Map({
   container: 'map',
   style: 'https://api.maptiler.com/maps/hybrid-v4-dark/style.json?key=xRFctPYdIXy6WuSSlKCV',
-  center: [0, 0],
-  zoom: 3,
+  center: [14.42053, 46.55908],
+  pitch: 45,
+  zoom: 4.5,
 });
 
 map.on('style.load', () => {
