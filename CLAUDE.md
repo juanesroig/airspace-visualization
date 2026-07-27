@@ -13,9 +13,9 @@ There is no test runner configured.
 
 ## Backend dependency
 
-The frontend is useless on its own. `src/api.ts` hardcodes `http://localhost:5000/api/opensky/<slug>`, and `App.tsx` opens a Server-Sent Events stream against `opensky_url('states')`. A separate backend (not in this repo) must proxy the [OpenSky Network](https://openskynetwork.github.io/opensky-api/) states API and push it over SSE with `success`/`error` named events. The SSE `success` event carries `{ states: OpenSkyStatePayloadTuple[] }`, where each state is a positional array decoded against `OPEN_SKY_STATES_PAYLOAD_COLUMNS`.
+The frontend is useless on its own. `src/api.ts` builds `<VITE_API_URL>/api/opensky/<slug>` (base from the `VITE_API_URL` env var, defaulting to `http://localhost:5000` for local dev), and `App.tsx` opens a Server-Sent Events stream against `opensky_url('states')`. A separate backend (not in this repo) must proxy the [OpenSky Network](https://openskynetwork.github.io/opensky-api/) states API and push it over SSE with `success`/`error` named events. The SSE `success` event carries `{ states: OpenSkyStatePayloadTuple[] }`, where each state is a positional array decoded against `OPEN_SKY_STATES_PAYLOAD_COLUMNS`.
 
-The basemap uses a hardcoded MapTiler style URL/key in `main.tsx`. `.env`'s `VITE_MAPBOX_ACCESS_TOKEN` is leftover scaffolding and is not currently read.
+The basemap uses a hardcoded MapTiler style URL/key in `main.tsx`. The only env var the app reads is `VITE_API_URL` (see `.env.example`); `.env`'s `VITE_MAPBOX_ACCESS_TOKEN` is leftover scaffolding and is not read.
 
 ## Architecture
 

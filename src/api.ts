@@ -1,6 +1,8 @@
+const API_BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:5000').replace(/\/+$/, '')
+
 export const opensky_url = (slug: string, ...params: string[]) => {
   const path = [slug, ...params].map(encodeURIComponent).join('/')
-  return `http://localhost:5000/api/opensky/${path}`
+  return `${API_BASE}/api/opensky/${path}`
 }
 
 type RSuccess<T> = {
