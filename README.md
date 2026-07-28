@@ -5,6 +5,8 @@ Live air traffic rendered on an interactive 3D globe. Aircraft stream in from th
 time — as 3D models when you zoom in, as lightweight sprites when you zoom out — with a
 side panel of live flight cards for everything currently in view.
 
+**[Live demo →](https://airspace.juanesroig.com)**
+
 ![Airspace Visualization — live aircraft on a 3D globe with a side panel of flight cards](public/airspace-screenshot.png)
 
 ## Features
