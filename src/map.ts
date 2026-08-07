@@ -18,8 +18,8 @@ export const AIRCRAFT_COLOR = '#ffffff'
 export const AIRCRAFT_HOVERED = '#5b9cf0'
 export const AIRCRAFT_SELECTED = '#2563eb'
 
-export const TRACK_COLOR_START = '#5b9cf0'
-export const TRACK_COLOR_END = '#ffffff'
+export const TRACK_COLOR_START = '#1d4ed8'
+export const TRACK_COLOR_END = '#60a5fa'
 
 const create_layer_id = (suffix: string) => {
   if (globalThis.crypto?.randomUUID) {
@@ -83,12 +83,22 @@ export class AircraftLayer  {
         const now = performance.now()
         const dt = now - this.last_frame
         this.last_frame = now
+
+        if (this.map.getZoom() < ZOOM_THRESHOLD) return
+
         this.camera.projectionMatrix = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix)
 
-        for (const [id, aircraft] of this.aircrafts.entries()) {
-          const progress = aircraft.progress + dt / DELTA_MS
-          const new_lon = lerp(aircraft.origin_lon, aircraft.destination_lon, progress)
-          const new_lat = lerp(aircraft.origin_lat, aircraft.destination_lat, progress)
+        const bounds = this.map.getBounds()
+        const tracked_icao24 = this.track?.icao24
+
+        for (const aircraft of this.aircrafts.values()) {
+          aircraft.progress = Math.min(aircraft.progress + dt / DELTA_MS, 1)
+          const new_lon = lerp(aircraft.origin_lon, aircraft.destination_lon, aircraft.progress)
+          const new_lat = lerp(aircraft.origin_lat, aircraft.destination_lat, aircraft.progress)
+          const is_tracked = aircraft.object.userData.icao24 === tracked_icao24
+          if (!is_tracked && !bounds.contains([new_lon, new_lat])) {
+            continue
+          }
           this.update_aircraft_object_position(
             aircraft.object,
             new_lon,
@@ -96,13 +106,9 @@ export class AircraftLayer  {
             aircraft.altitude,
             aircraft.heading_deg,
           )
-          this.aircrafts.set(id, {...aircraft, progress})
         }
 
-        this.update_geojson_src()
         this.renderer.resetState()
-
-        if (this.map.getZoom() < ZOOM_THRESHOLD) return
         this.renderer.render(this.scene, this.camera)
         this.map.triggerRepaint()
       }
@@ -152,10 +158,7 @@ export class AircraftLayer  {
           type: 'Feature',
           geometry:  {
             type: 'Point',
-            coordinates: [
-              lerp(state.origin_lon, state.destination_lon, state.progress),
-              lerp(state.origin_lat, state.destination_lat, state.progress)
-            ],
+            coordinates: [state.origin_lon, state.origin_lat],
           },
           properties: {
             name: icao24,
@@ -435,14 +438,12 @@ export class AircraftLayer  {
   }
 
   init() {
-    // Track layer goes in first so it renders beneath the aircraft (3D models
-    // and 2D sprites) at every zoom level.
     this.map.addLayer(this.track_layer_params)
     this.map.addLayer(this.custom_layer_params)
     this.load_sprite_image().then(image_data => {
       this.map.addSource(AIRCRAFTS_SRC, this.aircrafts_to_geojson())
       this.map.addImage('airplane', image_data)
-      this.map.addLayer(this.symbol_layer_params)
+      this.map.addLayer(this.symbol_layer_params, this.track_layer_params.id)
     }).catch(error => {
       console.error('Could not initialize aircraft sprite', error)
     })

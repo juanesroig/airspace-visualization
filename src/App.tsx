@@ -363,6 +363,11 @@ function App({map}: AppProps) {
     [hovered_aircraft, map]
   )
 
+  const refresh_aircrafts_on_screen = useCallback(() => {
+    if (aircrafts_layer_ref.current === null) return
+    set_aircrafts_on_screen(aircrafts_layer_ref.current.items_in_bbox())
+  }, [])
+
   const handle_scroll = (ev: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight, scrollHeight } = ev.currentTarget
     if (scrollTop + clientHeight >= scrollHeight - 1) {
@@ -371,17 +376,13 @@ function App({map}: AppProps) {
   }
 
   useEffect(function map_change_events() {
-    const handle_map_change = () => {
-      if (aircrafts_layer_ref.current === null) return
-      set_aircrafts_on_screen(aircrafts_layer_ref.current.items_in_bbox())
-    }
-    map.on("moveend", handle_map_change)
-    map.on("zoomend", handle_map_change)
+    map.on("moveend", refresh_aircrafts_on_screen)
+    map.on("zoomend", refresh_aircrafts_on_screen)
     return () => {
-      map.off('moveend', handle_map_change)
-      map.off('zoomend', handle_map_change)
+      map.off('moveend', refresh_aircrafts_on_screen)
+      map.off('zoomend', refresh_aircrafts_on_screen)
     }
-  }, [map])
+  }, [map, refresh_aircrafts_on_screen])
 
   useEffect(function click_events() {
     const handle_click = (ev: maplibregl.MapMouseEvent) => {
@@ -426,8 +427,7 @@ function App({map}: AppProps) {
       latest_opensky_states_ref.current = parsed_data
       set_opensky_state(opensky_loading_states.SUCCESS(parsed_data))
       if (aircrafts_layer_ref.current !== null) {
-        aircrafts_layer_ref.current.update_aircrafts(parsed_data)
-        set_aircrafts_on_screen(aircrafts_layer_ref.current.items_in_bbox())
+        aircrafts_layer_ref.current.update_aircrafts(parsed_data).then(refresh_aircrafts_on_screen)
       }
     })
     event_source.addEventListener("error", (event) => {
@@ -441,14 +441,16 @@ function App({map}: AppProps) {
     return () => {
       event_source.close()
     }
-  }, [set_opensky_state])
+  }, [refresh_aircrafts_on_screen, set_opensky_state])
 
   useEffect(function load_aircrafts_layer() {
     const load_layer = () => {
       aircrafts_layer_ref.current = new AircraftLayer(map)
       aircrafts_layer_ref.current.init()
       if (latest_opensky_states_ref.current.length > 0) {
-        void aircrafts_layer_ref.current.update_aircrafts(latest_opensky_states_ref.current)
+        void aircrafts_layer_ref.current
+          .update_aircrafts(latest_opensky_states_ref.current)
+          .then(refresh_aircrafts_on_screen)
       }
     }
 
@@ -461,7 +463,7 @@ function App({map}: AppProps) {
     return () => {
       map.off('load', load_layer)
     }
-  }, [map])
+  }, [map, refresh_aircrafts_on_screen])
 
   switch (opensky_state.status) {
     case LoadingStateStatus.not_started:
