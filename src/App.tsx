@@ -17,6 +17,7 @@ import {
   missing_case,
   type InferLoadingState,
 } from "./utils";
+import { WebGLCustomLayer } from "./webgl";
 
 const M_TO_FT = 3.28084
 const MS_TO_KT = 1.94384
@@ -304,6 +305,7 @@ function App({map}: AppProps) {
     opensky_loading_states.NOT_STARTED()
   )
   const aircrafts_layer_ref = useRef<AircraftLayer | null>(null)
+  const webgl_layer_ref = useRef<WebGLCustomLayer | null>(null)
   const latest_opensky_states_ref = useRef<OpenSkyStateItem[]>([])
   const flights_container_ref = useRef<HTMLDivElement | null>(null)
 
@@ -426,8 +428,9 @@ function App({map}: AppProps) {
       )
       latest_opensky_states_ref.current = parsed_data
       set_opensky_state(opensky_loading_states.SUCCESS(parsed_data))
-      if (aircrafts_layer_ref.current !== null) {
-        aircrafts_layer_ref.current.update_aircrafts(parsed_data).then(refresh_aircrafts_on_screen)
+      if (aircrafts_layer_ref.current !== null && webgl_layer_ref.current !== null) {
+        // aircrafts_layer_ref.current.update_aircrafts(parsed_data).then(refresh_aircrafts_on_screen)
+        webgl_layer_ref.current.update_aircrafts(parsed_data)
       }
     })
     event_source.addEventListener("error", (event) => {
@@ -445,23 +448,34 @@ function App({map}: AppProps) {
 
   useEffect(function load_aircrafts_layer() {
     const load_layer = () => {
-      aircrafts_layer_ref.current = new AircraftLayer(map)
-      aircrafts_layer_ref.current.init()
+      // aircrafts_layer_ref.current = new AircraftLayer(map)
+      // aircrafts_layer_ref.current.init()
+      webgl_layer_ref.current = new WebGLCustomLayer(map)
+      webgl_layer_ref.current.init()
       if (latest_opensky_states_ref.current.length > 0) {
-        void aircrafts_layer_ref.current
-          .update_aircrafts(latest_opensky_states_ref.current)
-          .then(refresh_aircrafts_on_screen)
+        // aircrafts_layer_ref.current
+        //   .update_aircrafts(latest_opensky_states_ref.current)
+        //   .then(refresh_aircrafts_on_screen)
+        webgl_layer_ref.current.update_aircrafts(latest_opensky_states_ref.current)
+        refresh_aircrafts_on_screen()
+      }
+    }
+
+    const clear_layers = () => {
+      if (webgl_layer_ref.current !== null) {
+        webgl_layer_ref.current.clear()
       }
     }
 
     if (map.loaded()) {
       load_layer()
-      return
+      return clear_layers
     }
 
     map.on('load', load_layer)
     return () => {
       map.off('load', load_layer)
+      clear_layers()
     }
   }, [map, refresh_aircrafts_on_screen])
 
