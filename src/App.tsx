@@ -428,8 +428,7 @@ function App({map}: AppProps) {
       )
       latest_opensky_states_ref.current = parsed_data
       set_opensky_state(opensky_loading_states.SUCCESS(parsed_data))
-      if (aircrafts_layer_ref.current !== null && webgl_layer_ref.current !== null) {
-        // aircrafts_layer_ref.current.update_aircrafts(parsed_data).then(refresh_aircrafts_on_screen)
+      if (webgl_layer_ref.current !== null) {
         webgl_layer_ref.current.update_aircrafts(parsed_data)
       }
     })
