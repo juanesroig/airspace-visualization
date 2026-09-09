@@ -24,6 +24,9 @@ export const make_loading_states = <P, E>() => ({
 export type InferLoadingState<T> = T extends ReturnType<typeof make_loading_states<infer P, infer E>>
   ? LoadingState<P, E>
   : never
+export const is_finite_number = (value: number | null | undefined): value is number =>
+  typeof value === 'number' && Number.isFinite(value)
+
 export function missing_case(missing: never) {
   throw new TypeError("Missing case on switch case", missing)
 }

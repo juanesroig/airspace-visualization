@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  OPEN_SKY_STATES_PAYLOAD_COLUMNS,
-  OpenSkyApi,
-  decode_tuple,
-  opensky_url,
-  type OpenSkyStateItem,
-  type OpenSkyStatesPayload,
+  AIRBORNE_STATUS,
+  aircraft_speed,
+  api_url,
+  type AircraftState,
+  type StatesPayload,
 } from "./api";
 import { AircraftLayer, AIRCRAFT_COLOR, AIRCRAFT_HOVERED, AIRCRAFT_SELECTED } from "./map";
 import maplibregl from 'maplibre-gl'
 import styles from './App.module.css'
 import {
-    deg_to_rad,
+  deg_to_rad,
   LoadingStateStatus,
   make_loading_states,
   missing_case,
@@ -19,24 +18,31 @@ import {
 } from "./utils";
 
 const M_TO_FT = 3.28084
-const MS_TO_KT = 1.94384
+const KMH_TO_KT = 0.539957
 const CARD_BATCH_SIZE = 20
 
 const integer = (n: number) => Math.round(n).toLocaleString('en-US')
 
-const category_label = (category: number): string | null => {
-  switch (category) {
-    case 2: return 'Light'
-    case 3: return 'Small'
-    case 4: return 'Large'
-    case 5: return 'Heavy / high vortex'
-    case 6: return 'Heavy'
-    case 7: return 'High performance'
-    case 16:
-    case 17:
-    case 18: return 'Ground vehicle'
-    default: return null
+const non_empty = (value: string | null | undefined) => value?.trim() || null
+
+const flight_label = (aircraft: AircraftState) =>
+  non_empty(aircraft.flight_icao)
+    ?? non_empty(aircraft.flight_iata)
+    ?? non_empty(aircraft.flight_number)
+    ?? 'Unknown'
+
+const status_label = (status: string) => {
+  const text = status.replace(/[-_]/g, ' ').trim()
+  return text === '' ? 'Unknown' : text[0].toUpperCase() + text.slice(1)
+}
+
+const route_label = (aircraft: AircraftState): string | null => {
+  const departure = non_empty(aircraft.dep_iata) ?? non_empty(aircraft.dep_icao)
+  const arrival = non_empty(aircraft.arr_iata) ?? non_empty(aircraft.arr_icao)
+  if (departure === null && arrival === null) {
+    return null
   }
+  return `${departure ?? '???'} → ${arrival ?? '???'}`
 }
 
 type CompassProps = {
@@ -159,17 +165,23 @@ function Metric({ label, value, unit, tone }: MetricProps) {
 }
 
 type AircraftCardProps = {
-  aircraft: OpenSkyStateItem;
+  aircraft: AircraftState;
   selected: boolean;
   hovered: boolean;
-  on_hover: (icao24: OpenSkyStateItem['icao24'] | null) => void;
-  on_select: (icao24: OpenSkyStateItem['icao24']) => void;
+  on_hover: (hex: AircraftState['hex'] | null) => void;
+  on_select: (hex: AircraftState['hex']) => void;
 }
 function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: AircraftCardProps) {
-  const altitude = aircraft.geo_altitude ?? aircraft.baro_altitude
-  const category = category_label(aircraft.category)
+  const on_ground = aircraft.status !== AIRBORNE_STATUS
+  const route = route_label(aircraft)
+  const aircraft_type = non_empty(aircraft.aircraft_icao)
+  const registration = non_empty(aircraft.reg_number)
 
-  const vs = aircraft.vertical_rate
+  const altitude = aircraft.alt ?? null
+  const ground_speed = aircraft_speed(aircraft)
+  const heading = aircraft.dir ?? null
+
+  const vs = aircraft.v_speed ?? null
   const vs_tone = vs === null || Math.abs(vs) < 0.5
     ? 'level'
     : vs > 0 ? 'climb' : 'descent'
@@ -178,24 +190,24 @@ function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: Airc
   return (
     <article
       className={styles['aircraft-card']}
-      data-onground={aircraft.on_ground}
+      data-onground={on_ground}
       data-selected={selected}
       data-hovered={hovered}
-      onMouseEnter={() => on_hover(aircraft.icao24)}
+      onMouseEnter={() => on_hover(aircraft.hex)}
       onMouseLeave={() => on_hover(null)}
-      onClick={() => on_select(aircraft.icao24)}
+      onClick={() => on_select(aircraft.hex)}
     >
       <header className={styles['card-head']}>
         <div className={styles['card-id']}>
-          <span className={styles.status} data-onground={aircraft.on_ground}>
+          <span className={styles.status} data-onground={on_ground}>
             <span className={styles['status-dot']} />
-            {aircraft.on_ground ? 'On ground' : 'Airborne'}
+            {status_label(aircraft.status)}
           </span>
           <h2 className={styles.callsign}>
-            {aircraft.callsign?.trim() || 'Unknown'}
+            {flight_label(aircraft)}
           </h2>
           <p className={styles['card-sub']}>
-            <span className={styles.icao}>{aircraft.icao24.toUpperCase()}</span>
+            <span className={styles.icao}>{aircraft.hex.toUpperCase()}</span>
             {aircraft.squawk && (
               <>
                 <span className={styles.dot}>·</span>
@@ -204,13 +216,17 @@ function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: Airc
                 </span>
               </>
             )}
-            <span className={styles.dot}>·</span>
-            {aircraft.origin_country}
+            {aircraft.flag && (
+              <>
+                <span className={styles.dot}>·</span>
+                {aircraft.flag}
+              </>
+            )}
           </p>
         </div>
 
-        {aircraft.true_track !== null && (
-          <Compass head={aircraft.true_track} />
+        {heading !== null && (
+          <Compass head={heading} />
         )}
       </header>
 
@@ -221,8 +237,10 @@ function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: Airc
           unit="ft"
         />
         <Metric
-          label="GS"
-          value={aircraft.velocity !== null ? integer(aircraft.velocity * MS_TO_KT) : '—'}
+          label="Speed"
+          value={ground_speed !== null
+            ? `${ground_speed.estimated ? '~' : ''}${integer(ground_speed.kmh * KMH_TO_KT)}`
+            : '—'}
           unit="kt"
         />
         <Metric
@@ -234,7 +252,9 @@ function AircraftCard({ aircraft, selected, hovered, on_hover, on_select }: Airc
       </div>
 
       <footer className={styles.tags}>
-        {category && <span className={styles.tag}>{category}</span>}
+        {aircraft_type && <span className={styles.tag}>{aircraft_type}</span>}
+        {route && <span className={styles.tag}>{route}</span>}
+        {registration && <span className={styles.tag}>{registration}</span>}
       </footer>
     </article>
   )
@@ -283,32 +303,32 @@ function ErrorOverlay({ message }: { message: string }) {
   )
 }
 
-const opensky_loading_states = make_loading_states<OpenSkyStateItem[], string>()
-type OpenSkyState = InferLoadingState<typeof opensky_loading_states>
+const api_loading_states = make_loading_states<AircraftState[], string>()
+type ApiState = InferLoadingState<typeof api_loading_states>
 
 type AppProps = { map: maplibregl.Map; }
 function App({map}: AppProps) {
   const [aircrafts_on_screen, set_aircrafts_on_screen] = useState(
-    new Set<OpenSkyStateItem['icao24']>()
+    new Set<AircraftState['hex']>()
   )
   const [
     hovered_aircraft,
     set_hovered_aircraft,
-  ] = useState<OpenSkyStateItem['icao24'] | null>(null)
+  ] = useState<AircraftState['hex'] | null>(null)
   const [
     selected_aircraft,
     set_selected_aircraft,
-  ] = useState<OpenSkyStateItem['icao24'] | null>(null)
+  ] = useState<AircraftState['hex'] | null>(null)
   const [max_displayed_cards, set_max_displayed_cards] = useState(CARD_BATCH_SIZE)
-  const [opensky_state, set_opensky_state] = useState<OpenSkyState>(
-    opensky_loading_states.NOT_STARTED()
+  const [traffic_state, set_traffic_state] = useState<ApiState>(
+    api_loading_states.NOT_STARTED()
   )
   const aircrafts_layer_ref = useRef<AircraftLayer | null>(null)
-  const latest_opensky_states_ref = useRef<OpenSkyStateItem[]>([])
+  const latest_states_ref = useRef<AircraftState[]>([])
   const flights_container_ref = useRef<HTMLDivElement | null>(null)
 
   const update_hovered_aircraft = useCallback(
-    (hovered: OpenSkyStateItem['icao24'] | null) => {
+    (hovered: AircraftState['hex'] | null) => {
       const layer = aircrafts_layer_ref.current
       set_hovered_aircraft(previous_hovered => {
         if (previous_hovered === hovered || layer === null) {
@@ -328,7 +348,7 @@ function App({map}: AppProps) {
   )
 
   const update_selected_aircraft = useCallback(
-    (selected: OpenSkyStateItem['icao24'] | null) => {
+    (selected: AircraftState['hex'] | null) => {
       const layer = aircrafts_layer_ref.current
       if (layer === null) return
       set_selected_aircraft(previous_selected => {
@@ -348,17 +368,6 @@ function App({map}: AppProps) {
         }
         return selected
       })
-      if (selected !== null) {
-        void OpenSkyApi.get_tracks(selected).then(result => {
-          if (result.success) {
-            aircrafts_layer_ref.current?.update_tracks([result.payload])
-          } else {
-            console.error('failed to fetch tracks', selected, result.error)
-          }
-        })
-      } else {
-        layer.clear_tracks()
-      }
     },
     [hovered_aircraft, map]
   )
@@ -415,41 +424,38 @@ function App({map}: AppProps) {
   }, [aircrafts_on_screen, map, update_hovered_aircraft])
 
   useEffect(function handle_event_source() {
-    const event_source = new EventSource(opensky_url('states'))
+    const event_source = new EventSource(api_url('states'))
     event_source.onopen = (() => {
-      set_opensky_state(opensky_loading_states.LOADING())
+      set_traffic_state(api_loading_states.LOADING())
     })
     event_source.addEventListener("success", (event: MessageEvent<string>) => {
-      const states = JSON.parse(event.data).states as OpenSkyStatesPayload['states']
-      const parsed_data = states.map(raw_state =>
-        decode_tuple<OpenSkyStateItem>(raw_state, OPEN_SKY_STATES_PAYLOAD_COLUMNS)
-      )
-      latest_opensky_states_ref.current = parsed_data
-      set_opensky_state(opensky_loading_states.SUCCESS(parsed_data))
+      const states = JSON.parse(event.data) as StatesPayload
+      latest_states_ref.current = states
+      set_traffic_state(api_loading_states.SUCCESS(states))
       if (aircrafts_layer_ref.current !== null) {
-        aircrafts_layer_ref.current.update_aircrafts(parsed_data).then(refresh_aircrafts_on_screen)
+        aircrafts_layer_ref.current.update_aircrafts(states).then(refresh_aircrafts_on_screen)
       }
     })
     event_source.addEventListener("error", (event) => {
       console.error("sse error", event)
-      set_opensky_state(previous =>
+      set_traffic_state(previous =>
         previous.status === LoadingStateStatus.success
           ? previous
-          : opensky_loading_states.ERROR("Couldn't connect to live traffic")
+          : api_loading_states.ERROR("Couldn't connect to live traffic")
       )
     })
     return () => {
       event_source.close()
     }
-  }, [refresh_aircrafts_on_screen, set_opensky_state])
+  }, [refresh_aircrafts_on_screen, set_traffic_state])
 
   useEffect(function load_aircrafts_layer() {
     const load_layer = () => {
       aircrafts_layer_ref.current = new AircraftLayer(map)
       aircrafts_layer_ref.current.init()
-      if (latest_opensky_states_ref.current.length > 0) {
+      if (latest_states_ref.current.length > 0) {
         void aircrafts_layer_ref.current
-          .update_aircrafts(latest_opensky_states_ref.current)
+          .update_aircrafts(latest_states_ref.current)
           .then(refresh_aircrafts_on_screen)
       }
     }
@@ -465,20 +471,20 @@ function App({map}: AppProps) {
     }
   }, [map, refresh_aircrafts_on_screen])
 
-  switch (opensky_state.status) {
+  switch (traffic_state.status) {
     case LoadingStateStatus.not_started:
     case LoadingStateStatus.loading: {
       return <LoadingOverlay />
     }
     case LoadingStateStatus.error: {
-      return <ErrorOverlay message={opensky_state.error} />
+      return <ErrorOverlay message={traffic_state.error} />
     }
     case LoadingStateStatus.success:  {
-      const displayed_aircrafts = opensky_state.payload
-        .filter(state => aircrafts_on_screen.has(state.icao24))
+      const displayed_aircrafts = traffic_state.payload
+        .filter(state => aircrafts_on_screen.has(state.hex))
         .sort((a, b) => {
-          if (a.icao24 === selected_aircraft) return -1
-          if (b.icao24 === selected_aircraft) return 1
+          if (a.hex === selected_aircraft) return -1
+          if (b.hex === selected_aircraft) return 1
           return 0
         })
       const lazy_loaded_aircrafts = displayed_aircrafts.toSpliced(max_displayed_cards)
@@ -505,10 +511,10 @@ function App({map}: AppProps) {
             ) : (
               lazy_loaded_aircrafts.map(state => (
                 <AircraftCard
-                  key={state.icao24}
+                  key={state.hex}
                   aircraft={state}
-                  selected={selected_aircraft === state.icao24}
-                  hovered={hovered_aircraft === state.icao24}
+                  selected={selected_aircraft === state.hex}
+                  hovered={hovered_aircraft === state.hex}
                   on_hover={update_hovered_aircraft}
                   on_select={update_selected_aircraft}
                 />
@@ -519,7 +525,7 @@ function App({map}: AppProps) {
       )
     }
     default: {
-      missing_case(opensky_state)
+      missing_case(traffic_state)
     }
   }
 }
