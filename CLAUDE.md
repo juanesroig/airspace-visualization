@@ -13,7 +13,7 @@ There is no test runner configured.
 
 ## Backend dependency
 
-The frontend is useless on its own. `src/api.ts` builds `<VITE_API_URL>/api/opensky/<slug>` (base from the `VITE_API_URL` env var, defaulting to `http://localhost:5000` for local dev), and `App.tsx` opens a Server-Sent Events stream against `opensky_url('states')`. A separate backend (not in this repo) must proxy the [OpenSky Network](https://openskynetwork.github.io/opensky-api/) states API and push it over SSE with `success`/`error` named events. The SSE `success` event carries `{ states: OpenSkyStatePayloadTuple[] }`, where each state is a positional array decoded against `OPEN_SKY_STATES_PAYLOAD_COLUMNS`.
+The frontend is useless on its own. `src/api.ts` builds `<VITE_API_URL>/api/<slug>` (base from the `VITE_API_URL` env var, defaulting to `http://localhost:5000` for local dev), and `App.tsx` opens a Server-Sent Events stream against `api_url('states')`. A separate backend (not in this repo) aggregates several air traffic sources and pushes them over SSE with `success`/`error` named events. The SSE `success` event carries a bare `AircraftState[]` — no wrapping object, no decoding. Units on the wire: `alt` in meters, `speed` in km/h, `v_speed` in m/s, `dir` in degrees clockwise from north; aircraft are keyed by `hex`. Only `hex`/`lat`/`lng`/`updated`/`status`/`type` are guaranteed, `lat`/`lng` can be null, and `speed` is absent on over a third of a live sample — `update_aircrafts` skips records without a finite position and defaults the rest, because a NaN coordinate makes MapLibre throw `Invalid LngLat object`. `aircraft_speed` (in `api.ts`) fills the missing speeds: airborne aircraft get a hardcoded median for their altitude band so they keep moving, flagged `estimated` so the cards can mark them with a `~`; anything not airborne gets `null` rather than an invented speed.
 
 The basemap uses a hardcoded MapTiler style URL/key in `main.tsx`. The only env var the app reads is `VITE_API_URL` (see `.env.example`); `.env`'s `VITE_MAPBOX_ACCESS_TOKEN` is leftover scaffolding and is not read.
 
@@ -27,17 +27,15 @@ This is a React 19 + Vite + TypeScript app that renders live air traffic on a 3D
 - A `custom` WebGL layer that shares MapLibre's GL context with a Three.js scene, rendering one cloned glTF airplane model (`/airplane.glb`) per aircraft. Only renders when zoomed in past the threshold.
 - A `symbol` layer (2D sprite from `/airplane.svg`, `maxzoom: ZOOM_THRESHOLD`) backed by a GeoJSON source, used when zoomed out.
 
-  Both are kept in sync from a single `Map<icao24, AircraftMapData>`. Aircraft positions are **interpolated every frame** in the custom layer's `render` callback: each update from the backend sets an origin (reported lon/lat) and a `project_position`-computed destination (dead-reckoned `DELTA_MS` ahead from heading + velocity), and `progress` is advanced by frame delta time and `lerp`'d. `update_geojson_src` repaints the symbol layer from the same interpolated positions.
+  Both are kept in sync from a single `Map<hex, AircraftMapData>`. Aircraft positions are **interpolated every frame** in the custom layer's `render` callback: each update from the backend sets an origin (reported `lng`/`lat`) and a `project_position`-computed destination (dead-reckoned `DELTA_MS` ahead from `dir` + `aircraft_speed()`, converted to m/s), and `progress` is advanced by frame delta time and `lerp`'d. `update_geojson_src` repaints the symbol layer from the same interpolated positions.
 
   Picking is mode-dependent (`detect_mouse_on_aircraft`): a Three.js `Raycaster` against the 3D models when zoomed in, `map.queryRenderedFeatures` against the symbol layer when zoomed out. Aircraft color (default / hovered / selected) is mutated in place per-object via cloned Three materials and the GeoJSON `color` property.
 
 **`src/App.tsx`** owns UI state (hovered/selected aircraft, which aircraft are in the viewport bbox, lazy-loaded card count) and wires MapLibre events (`moveend`/`zoomend`/`click`/`mousemove`) to the layer. Hover/selection is bidirectional: hovering a card recolors the map model and vice versa, coordinated through `AircraftLayer.change_aircraft_color`. The viewport list comes from `AircraftLayer.items_in_bbox()`, recomputed on map move and on each data update. Cards render in batches of `CARD_BATCH_SIZE` via scroll-based lazy loading.
 
-**`src/state.ts`** holds the Jotai atom for OpenSky load status, built on a generic discriminated-union `LoadingState` helper (`make_loading_states`). `App.tsx`'s render is a `switch` over `LoadingStateStatus`; `missing_case` (in `utils.ts`) enforces exhaustiveness at the type level.
+**`src/api.ts`** types the wire format — states arrive as `AircraftState` objects and need no decoding — and compensates for its gaps via `aircraft_speed`. The `Result` / `Api` helpers exist but the live path uses SSE, not these fetch helpers.
 
-**`src/api.ts`** decodes the OpenSky positional-array wire format. `OPEN_SKY_STATES_PAYLOAD_COLUMNS` is the source of truth for the column order — its order must match the backend payload exactly, and `OpenSkyStatePayloadTuple` is derived from it via the `ValuesAsTuple` mapped type. The `Result` / `OpenSkyApi` helpers exist but the live path uses SSE, not these fetch helpers.
-
-**`src/utils.ts`** holds the math: `lerp`/`unlerp`/`remap` (used for interpolation and screen→NDC mapping in raycasting) and `project_position` (great-circle dead reckoning).
+**`src/utils.ts`** holds the math — `lerp`/`unlerp`/`remap` (used for interpolation and screen→NDC mapping in raycasting) and `project_position` (great-circle dead reckoning) — plus the traffic load status types: a generic discriminated-union `LoadingState` helper (`make_loading_states`). `App.tsx`'s render is a `switch` over `LoadingStateStatus`; `missing_case` enforces exhaustiveness at the type level.
 
 ## Conventions
 

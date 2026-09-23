@@ -1,8 +1,10 @@
+import { is_finite_number } from './utils'
+
 const API_BASE = (import.meta.env.VITE_API_URL ?? 'http://localhost:5000').replace(/\/+$/, '')
 
-export const opensky_url = (slug: string, ...params: string[]) => {
+export const api_url = (slug: string, ...params: string[]) => {
   const path = [slug, ...params].map(encodeURIComponent).join('/')
-  return `${API_BASE}/api/opensky/${path}`
+  return `${API_BASE}/api/${path}`
 }
 
 type RSuccess<T> = {
@@ -51,121 +53,69 @@ const get_data = async <T>(
   }
 }
 
-export const OPEN_SKY_STATES_PAYLOAD_COLUMNS = [
-  "icao24",
-  "callsign",
-  "origin_country",
-  "time_position",
-  "last_contact",
-  "longitude",
-  "latitude",
-  "baro_altitude",
-  "on_ground",
-  "velocity",
-  "true_track",
-  "vertical_rate",
-  "sensors",
-  "geo_altitude",
-  "squawk",
-  "spi",
-  "position_source",
-  "category",
+export type AircraftState = {
+  hex: string;
+  reg_number?: string | null;
+  flag?: string | null;
+  lat: number | null;
+  lng: number | null;
+  alt?: number | null;
+  dir?: number | null;
+  speed?: number | null;
+  v_speed?: number | null;
+  squawk?: string | null;
+  flight_number?: string | null;
+  flight_icao?: string | null;
+  flight_iata?: string | null;
+  dep_icao?: string | null;
+  dep_iata?: string | null;
+  arr_icao?: string | null;
+  arr_iata?: string | null;
+  airline_icao?: string | null;
+  airline_iata?: string | null;
+  aircraft_icao?: string | null;
+  updated: number;
+  status: string;
+  // Which source the record came from, e.g. `adsb`.
+  type: string;
+}
+
+export type StatesPayload = AircraftState[]
+
+export const AIRBORNE_STATUS = 'en-route'
+
+const ESTIMATED_SPEED_BY_ALTITUDE_KMH = [
+  { below_alt: 1_000, kmh: 272 },
+  { below_alt: 3_000, kmh: 451 },
+  { below_alt: 6_000, kmh: 622 },
+  { below_alt: 9_000, kmh: 764 },
+  { below_alt: Infinity, kmh: 858 },
 ] as const
 
-export type OpenSkyStateItem = {
-  icao24: string;
-  callsign: string | null;
-  origin_country: string;
-  time_position: number | null;
-  last_contact: number;
-  longitude: number;
-  latitude: number;
-  baro_altitude: number | null;
-  on_ground: boolean;
-  velocity: number | null;
-  true_track: number | null;
-  vertical_rate: number | null;
-  sensors: number[] | null;
-  geo_altitude: number | null;
-  squawk: string | null;
-  spi: boolean;
-  position_source: number;
-  category: number;
+const ESTIMATED_SPEED_KMH = 813
+
+export type AircraftSpeed = {
+  kmh: number;
+  estimated: boolean;
 }
 
-type ValuesAsTuple<T, K extends readonly (keyof T)[]> = {
-  [I in keyof K]: K[I] extends keyof T ? T[K[I]] : never;
-};
-
-export const decode_tuple = <T>(
-  tuple: readonly unknown[],
-  columns: readonly (keyof T)[],
-): T => {
-  return Object.fromEntries(
-    columns.map((column, index) => [column, tuple[index]])
-  ) as T
-}
-
-export type OpenSkyStatePayloadTuple = ValuesAsTuple<
-  OpenSkyStateItem,
-  typeof OPEN_SKY_STATES_PAYLOAD_COLUMNS
->
- 
-export type OpenSkyStatesPayload = {
-  time: number;
-  states: OpenSkyStatePayloadTuple[];
-}
-
-export const OPEN_SKY_TRACK_WAYPOINT_COLUMNS = [
-  "time",
-  "latitude",
-  "longitude",
-  "baro_altitude",
-  "true_track",
-  "on_ground",
-] as const
-
-export type OpenSkyTrackWaypointItem = {
-  time: number;
-  latitude: number | null;
-  longitude: number | null;
-  baro_altitude: number | null;
-  true_track: number | null;
-  on_ground: boolean;
-}
-
-export type OpenSkyTrackWaypoint = ValuesAsTuple<
-  OpenSkyTrackWaypointItem,
-  typeof OPEN_SKY_TRACK_WAYPOINT_COLUMNS
->
-
-// Wire format: `path` arrives as positional waypoint tuples.
-export type OpenSkyTracksPayload = {
-  icao24: string;
-  startTime: number;
-  endTime: number;
-  callsign: string | null;
-  path: OpenSkyTrackWaypoint[];
-}
-
-// Decoded form: `path` waypoints turned into objects.
-export type OpenSkyTrack = Omit<OpenSkyTracksPayload, 'path'> & {
-  path: OpenSkyTrackWaypointItem[];
-}
-
-export const OpenSkyApi = {
-  get_all_states: async () => {
-    return await get_data<OpenSkyStatesPayload>(opensky_url('states'))
-  },
-  get_tracks: async (icao24: string) => {
-    const result = await get_data<OpenSkyTracksPayload>(opensky_url('tracks', icao24))
-    if (!result.success) return result
-    const track: OpenSkyTrack = {
-      ...result.payload,
-      path: result.payload.path.map(waypoint =>
-        decode_tuple<OpenSkyTrackWaypointItem>(waypoint, OPEN_SKY_TRACK_WAYPOINT_COLUMNS)
-      ),
-    }
-    return Result.ok(track)
+export const aircraft_speed = (state: AircraftState): AircraftSpeed | null => {
+  if (is_finite_number(state.speed)) {
+    return { kmh: state.speed, estimated: false }
   }
+  if (state.status !== AIRBORNE_STATUS) {
+    return null
+  }
+  const alt = state.alt
+  if (!is_finite_number(alt)) {
+    return { kmh: ESTIMATED_SPEED_KMH, estimated: true }
+  }
+  const band = ESTIMATED_SPEED_BY_ALTITUDE_KMH.find(({ below_alt }) => alt < below_alt)
+  return { kmh: band?.kmh ?? ESTIMATED_SPEED_KMH, estimated: true }
+}
+
+export const Api = {
+  get_all_states: async () => {
+    return await get_data<StatesPayload>(api_url('states'))
+  },
 }
