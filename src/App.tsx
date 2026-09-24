@@ -351,25 +351,8 @@ function App({map}: AppProps) {
 
   const update_selected_aircraft = useCallback(
     (selected: AircraftState['hex'] | null) => {
-      const layer = aircrafts_layer_ref.current
-      if (layer === null) return
-      set_selected_aircraft(previous_selected => {
-        if (previous_selected !== null) {
-          layer.change_aircraft_color(
-            previous_selected,
-            previous_selected === hovered_aircraft ? AIRCRAFT_HOVERED : AIRCRAFT_COLOR,
-          )
-        }
-        if (selected !== null) {
-          layer.change_aircraft_color(selected, AIRCRAFT_SELECTED)
-          const position = layer.aircraft_position(selected)
-          if (position !== null) {
-            map.flyTo({ center: position, zoom: 9 })
-          }
-          flights_container_ref.current?.scrollTo({ top: 0, behavior: 'smooth' })
-        }
-        return selected
-      })
+      if (webgl_layer_ref.current === null) return
+      webgl_layer_ref.current.select_aircraft(selected)
     },
     [hovered_aircraft, map]
   )

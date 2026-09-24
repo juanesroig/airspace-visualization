@@ -1,5 +1,5 @@
 import maplibregl from 'maplibre-gl'
-import { deg_to_rad, is_finite_number } from './utils'
+import { deg_to_rad, is_finite_number, rad_to_deg } from './utils'
 import { aircraft_speed, type AircraftState } from './api'
 import { AIRCRAFT_OBJECT, AIRCRAFT_VERTEX_COUNT } from './aircraft'
 
@@ -7,14 +7,21 @@ const KMH_TO_MS = 1 / 3.6
 const MARKER_SIZE_METERS = 5000
 
 const INSTANCE_FLOATS = 6
+const COLOR_FLOATS = 4
 const INSTANCE_STRIDE = INSTANCE_FLOATS * Float32Array.BYTES_PER_ELEMENT
 const A_MOTION_OFFSET = 4 * Float32Array.BYTES_PER_ELEMENT
+
+const DEFAULT_COLOR_RGBA = [1.0, 1.0, 1.0, 0.85]
+const SELECTED_COLOR_RGBA = [0.14, 0.38, 0.92, 0.85]
 
 const VERTEX_SHADER_SRC = `#version 300 es
 
   in vec3 a_position;
   in vec4 a_state;
   in vec2 a_motion;
+  in vec4 a_color;
+
+  out vec4 v_color;
 
   uniform float u_time;
   uniform mat4 u_globe_matrix;
@@ -50,19 +57,23 @@ const VERTEX_SHADER_SRC = `#version 300 es
     p = rot_y( a_state.x)  * p;
 
     gl_Position = u_globe_matrix * vec4(p, 1.0);
+    v_color = a_color;
   }
 `
 
 const FRAGMENT_SHADER_SRC = `#version 300 es
   precision highp float;
 
+  in vec4 v_color;
+
   out vec4 fragColor;
 
   void main() {
-    fragColor = vec4(1.0, 1.0, 1.0, 0.85);
+    fragColor = v_color;
   }
 `
 
+type IndicesByHex = Record<AircraftState['hex'], number>
 export class WebGLCustomLayer {
   map: maplibregl.Map
   gl: WebGL2RenderingContext | null = null
@@ -73,12 +84,19 @@ export class WebGLCustomLayer {
   a_pos: GLint | null = null
   a_state: GLint | null = null
   a_motion: GLint | null = null
+  a_color: GLint | null = null
   u_time: WebGLUniformLocation | null = null
   u_globe_matrix: WebGLUniformLocation | null = null
   buffer: WebGLBuffer | null = null
   instance_buffer: WebGLBuffer | null = null
+  color_buffer: WebGLBuffer | null = null
+  private instance_index_by_hex: IndicesByHex = {}
+  private color_index_by_hex: IndicesByHex = {}
   private instance_data = new Float32Array(0)
+  private color_data = new Float32Array(0)
   private instances_dirty = false
+  private colors_dirty = false
+  private selected_hex: AircraftState['hex'] | null = null
   private aircraft_count = 0
 
   constructor(map: maplibregl.MapLibreMap) {
@@ -122,6 +140,7 @@ export class WebGLCustomLayer {
         this.a_pos = gl.getAttribLocation(this.program, 'a_position')
         this.a_state = gl.getAttribLocation(this.program, 'a_state')
         this.a_motion = gl.getAttribLocation(this.program, 'a_motion')
+        this.a_color = gl.getAttribLocation(this.program, 'a_color')
         this.u_time = gl.getUniformLocation(this.program, 'u_time')
         this.u_globe_matrix = gl.getUniformLocation(this.program, 'u_globe_matrix')
 
@@ -135,6 +154,7 @@ export class WebGLCustomLayer {
         gl.bufferData(gl.ARRAY_BUFFER, AIRCRAFT_OBJECT, gl.STATIC_DRAW);
 
         this.instance_buffer = gl.createBuffer();
+        this.color_buffer = gl.createBuffer();
       },
       render: (gl, args) => {
         if (!(gl instanceof WebGL2RenderingContext)) {
@@ -150,6 +170,8 @@ export class WebGLCustomLayer {
             || this.a_state < 0
             || this.a_motion === null
             || this.a_motion < 0
+            || this.a_color === null
+            || this.a_color < 0
         ) {
           return
         }
@@ -170,6 +192,15 @@ export class WebGLCustomLayer {
         gl.vertexAttribPointer(this.a_motion, 2, gl.FLOAT, false, INSTANCE_STRIDE, A_MOTION_OFFSET);
         gl.vertexAttribDivisor(this.a_motion, 1);
 
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.color_buffer);
+        if (this.colors_dirty) {
+          gl.bufferData(gl.ARRAY_BUFFER, this.color_data, gl.DYNAMIC_DRAW);
+          this.colors_dirty = false
+        }
+        gl.enableVertexAttribArray(this.a_color);
+        gl.vertexAttribPointer(this.a_color, 4, gl.FLOAT, false, 0, 0);
+        gl.vertexAttribDivisor(this.a_color, 1);
+
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
@@ -185,6 +216,7 @@ export class WebGLCustomLayer {
 
         gl.vertexAttribDivisor(this.a_state, 0);
         gl.vertexAttribDivisor(this.a_motion, 0);
+        gl.vertexAttribDivisor(this.a_color, 0);
 
         this.map.triggerRepaint()
       }
@@ -205,9 +237,36 @@ export class WebGLCustomLayer {
     }
   }
 
+  private set_aircraft_color(hex: AircraftState['hex'], rgba: number[]) {
+    const color_index = this.color_index_by_hex[hex]
+    if (color_index === undefined) return
+    for (let idx = 0; idx < COLOR_FLOATS; idx++) {
+      this.color_data[color_index + idx] = rgba[idx]
+    }
+    this.colors_dirty = true
+  }
+
+  select_aircraft(hex: AircraftState['hex'] | null) {
+    if (this.selected_hex !== null) {
+      this.set_aircraft_color(this.selected_hex, DEFAULT_COLOR_RGBA)
+    }
+    this.selected_hex = hex
+    if (hex === null) return
+
+    this.set_aircraft_color(hex, SELECTED_COLOR_RGBA)
+    const instance_index = this.instance_index_by_hex[hex]
+    if (instance_index === undefined) return
+    const lon = rad_to_deg(this.instance_data[instance_index])
+    const lat = rad_to_deg(this.instance_data[instance_index + 1])
+    this.map.flyTo({zoom: 9, center: [lon, lat]})
+  }
+
   update_aircrafts(states: AircraftState[]) {
     if (this.instance_data.length < states.length * INSTANCE_FLOATS) {
       this.instance_data = new Float32Array(states.length * INSTANCE_FLOATS)
+    }
+    if (this.color_data.length < states.length * COLOR_FLOATS) {
+      this.color_data = new Float32Array(states.length * COLOR_FLOATS)
     }
 
     const t0 = performance.now() / 1000
@@ -217,18 +276,27 @@ export class WebGLCustomLayer {
       if (!is_finite_number(state.lat) || !is_finite_number(state.lng)) {
         continue
       }
-      const offset = count * INSTANCE_FLOATS
-      this.instance_data[offset + 0] = deg_to_rad(state.lng)
-      this.instance_data[offset + 1] = deg_to_rad(state.lat)
-      this.instance_data[offset + 2] = deg_to_rad(state.dir ?? 0)
-      this.instance_data[offset + 3] = state.alt ?? 0
-      this.instance_data[offset + 4] = (aircraft_speed(state)?.kmh ?? 0) * KMH_TO_MS
-      this.instance_data[offset + 5] = t0
+      const instance_offset = count * INSTANCE_FLOATS
+      this.instance_index_by_hex[state.hex] = instance_offset
+      this.instance_data[instance_offset] = deg_to_rad(state.lng)
+      this.instance_data[instance_offset + 1] = deg_to_rad(state.lat)
+      this.instance_data[instance_offset + 2] = deg_to_rad(state.dir ?? 0)
+      this.instance_data[instance_offset + 3] = state.alt ?? 0
+      this.instance_data[instance_offset + 4] = (aircraft_speed(state)?.kmh ?? 0) * KMH_TO_MS
+      this.instance_data[instance_offset + 5] = t0
+
+      const color_offset = count * COLOR_FLOATS
+      this.color_index_by_hex[state.hex] = color_offset
+      const color = state.hex === this.selected_hex ? SELECTED_COLOR_RGBA : DEFAULT_COLOR_RGBA
+      for (let idx = 0; idx < COLOR_FLOATS; idx++) {
+        this.color_data[color_offset + idx] = color[idx]
+      }
       count++
     }
 
     this.aircraft_count = count
     this.instances_dirty = true
+    this.colors_dirty = true
     this.map.triggerRepaint()
   }
 }
