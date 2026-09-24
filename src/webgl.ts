@@ -1,13 +1,11 @@
 import maplibregl from 'maplibre-gl'
-import { deg_to_rad } from './utils'
-import type { OpenSkyStateItem } from './api'
+import { deg_to_rad, is_finite_number } from './utils'
+import { aircraft_speed, type AircraftState } from './api'
+import { AIRCRAFT_OBJECT, AIRCRAFT_VERTEX_COUNT } from './aircraft'
 
+const KMH_TO_MS = 1 / 3.6
+// AIRCRAFT_OBJECT is normalized to [-1, 1], so its longest axis spans 2 units.
 const MARKER_SIZE_METERS = 5000
-const MARKER_VERTICES = new Float32Array([
-  -(MARKER_SIZE_METERS/2) / 2, 0,
-  (MARKER_SIZE_METERS/2) / 2, 0,
-  0, MARKER_SIZE_METERS,
-])
 
 // vec4 a_state (lon_rad, lat_rad, track_rad, alt_m) + vec2 a_motion (velocity, t0)
 const INSTANCE_FLOATS = 6
@@ -16,7 +14,7 @@ const A_MOTION_OFFSET = 4 * Float32Array.BYTES_PER_ELEMENT
 
 const VERTEX_SHADER_SRC = `#version 300 es
 
-  in vec2 a_position;
+  in vec3 a_position;
   in vec4 a_state;
   in vec2 a_motion;
 
@@ -25,6 +23,7 @@ const VERTEX_SHADER_SRC = `#version 300 es
 
   const float R = 6371008.8;
   const float MAX_DT = 30.0;
+  const float HALF_SIZE = ${(MARKER_SIZE_METERS / 2).toFixed(1)};
 
   mat3 rot_x(float a) {
     float c=cos(a), s=sin(a);
@@ -45,7 +44,8 @@ const VERTEX_SHADER_SRC = `#version 300 es
     float dt = clamp(u_time - a_motion.y, 0.0, MAX_DT);
     float theta = a_motion.x * dt / R;
 
-    vec3 p = vec3(a_position / R, 1.0 + a_state.w / R);
+    vec3 m = a_position * HALF_SIZE;
+    vec3 p = vec3(m.xy / R, 1.0 + (a_state.w + m.z) / R);
     p = rot_x(-theta)      * p;
     p = rot_z(-a_state.z)  * p;
     p = rot_x(-a_state.y)  * p;
@@ -134,7 +134,7 @@ export class WebGLCustomLayer {
 
         this.buffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, MARKER_VERTICES, gl.STATIC_DRAW);
+        gl.bufferData(gl.ARRAY_BUFFER, AIRCRAFT_OBJECT, gl.STATIC_DRAW);
 
         this.instance_buffer = gl.createBuffer();
       },
@@ -158,7 +158,7 @@ export class WebGLCustomLayer {
         gl.useProgram(this.program)
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
         gl.enableVertexAttribArray(this.a_pos);
-        gl.vertexAttribPointer(this.a_pos, 2, gl.FLOAT, false, 0, 0);
+        gl.vertexAttribPointer(this.a_pos, 3, gl.FLOAT, false, 0, 0);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.instance_buffer);
         if (this.instances_dirty) {
@@ -183,7 +183,7 @@ export class WebGLCustomLayer {
 
         gl.uniform1f(this.u_time, performance.now() / 1000)
 
-        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 3, this.aircraft_count);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, AIRCRAFT_VERTEX_COUNT, this.aircraft_count);
 
         gl.vertexAttribDivisor(this.a_state, 0);
         gl.vertexAttribDivisor(this.a_motion, 0);
@@ -207,28 +207,29 @@ export class WebGLCustomLayer {
     }
   }
 
-  update_aircrafts(opensky_states: OpenSkyStateItem[]) {
-    const count = opensky_states.length
-    if (this.instance_data.length < count * INSTANCE_FLOATS) {
-      this.instance_data = new Float32Array(count * INSTANCE_FLOATS)
+  update_aircrafts(states: AircraftState[]) {
+    if (this.instance_data.length < states.length * INSTANCE_FLOATS) {
+      this.instance_data = new Float32Array(states.length * INSTANCE_FLOATS)
     }
-    this.aircraft_count = count
 
     const t0 = performance.now() / 1000
 
-    for (let i = 0; i < count; i++) {
-      const {
-        longitude, latitude, geo_altitude, true_track, velocity,
-      } = opensky_states[i]
-      const offset = i * INSTANCE_FLOATS
-      this.instance_data[offset + 0] = deg_to_rad(longitude)
-      this.instance_data[offset + 1] = deg_to_rad(latitude)
-      this.instance_data[offset + 2] = deg_to_rad(true_track ?? 0)
-      this.instance_data[offset + 3] = geo_altitude ?? 0
-      this.instance_data[offset + 4] = velocity ?? 0
+    let count = 0
+    for (const state of states) {
+      if (!is_finite_number(state.lat) || !is_finite_number(state.lng)) {
+        continue
+      }
+      const offset = count * INSTANCE_FLOATS
+      this.instance_data[offset + 0] = deg_to_rad(state.lng)
+      this.instance_data[offset + 1] = deg_to_rad(state.lat)
+      this.instance_data[offset + 2] = deg_to_rad(state.dir ?? 0)
+      this.instance_data[offset + 3] = state.alt ?? 0
+      this.instance_data[offset + 4] = (aircraft_speed(state)?.kmh ?? 0) * KMH_TO_MS
       this.instance_data[offset + 5] = t0
+      count++
     }
 
+    this.aircraft_count = count
     this.instances_dirty = true
     this.map.triggerRepaint()
   }

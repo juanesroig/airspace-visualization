@@ -453,15 +453,10 @@ function App({map}: AppProps) {
 
   useEffect(function load_aircrafts_layer() {
     const load_layer = () => {
-      // aircrafts_layer_ref.current = new AircraftLayer(map)
-      // aircrafts_layer_ref.current.init()
       webgl_layer_ref.current = new WebGLCustomLayer(map)
       webgl_layer_ref.current.init()
       if (latest_states_ref.current.length > 0) {
-        // aircrafts_layer_ref.current
-        //   .update_aircrafts(latest_states_ref.current)
-        //   .then(refresh_aircrafts_on_screen)
-        webgl_layer_ref.current.update_aircrafts(latest_opensky_states_ref.current)
+        webgl_layer_ref.current.update_aircrafts(latest_states_ref.current)
         refresh_aircrafts_on_screen()
       }
     }
