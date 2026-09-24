@@ -4,10 +4,8 @@ import { aircraft_speed, type AircraftState } from './api'
 import { AIRCRAFT_OBJECT, AIRCRAFT_VERTEX_COUNT } from './aircraft'
 
 const KMH_TO_MS = 1 / 3.6
-// AIRCRAFT_OBJECT is normalized to [-1, 1], so its longest axis spans 2 units.
 const MARKER_SIZE_METERS = 5000
 
-// vec4 a_state (lon_rad, lat_rad, track_rad, alt_m) + vec2 a_motion (velocity, t0)
 const INSTANCE_FLOATS = 6
 const INSTANCE_STRIDE = INSTANCE_FLOATS * Float32Array.BYTES_PER_ELEMENT
 const A_MOTION_OFFSET = 4 * Float32Array.BYTES_PER_ELEMENT
@@ -61,7 +59,7 @@ const FRAGMENT_SHADER_SRC = `#version 300 es
   out vec4 fragColor;
 
   void main() {
-    fragColor = vec4(1.0, 1.0, 1.0, 0.75);
+    fragColor = vec4(1.0, 1.0, 1.0, 0.85);
   }
 `
 

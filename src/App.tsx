@@ -375,9 +375,15 @@ function App({map}: AppProps) {
   )
 
   const refresh_aircrafts_on_screen = useCallback(() => {
-    if (aircrafts_layer_ref.current === null) return
-    set_aircrafts_on_screen(aircrafts_layer_ref.current.items_in_bbox())
-  }, [])
+    const bounds = map.getBounds()
+    const result = new Set<AircraftState['hex']>()
+    for (const {lng, lat, hex} of latest_states_ref.current) {
+      if (lng !== null && lat !== null && bounds.contains([lng, lat])) {
+        result.add(hex)
+      }
+    }
+    set_aircrafts_on_screen(result)
+  }, [map])
 
   const handle_scroll = (ev: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight, scrollHeight } = ev.currentTarget
@@ -433,6 +439,7 @@ function App({map}: AppProps) {
     event_source.addEventListener("success", (event: MessageEvent<string>) => {
       const states = JSON.parse(event.data) as StatesPayload
       latest_states_ref.current = states
+      refresh_aircrafts_on_screen()
       set_traffic_state(api_loading_states.SUCCESS(states))
       if (webgl_layer_ref.current !== null) {
         webgl_layer_ref.current.update_aircrafts(states)
