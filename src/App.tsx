@@ -21,6 +21,8 @@ import { WebGLCustomLayer } from "./webgl";
 const M_TO_FT = 3.28084
 const KMH_TO_KT = 0.539957
 const CARD_BATCH_SIZE = 20
+const INACTIVE_DISCONNECT_MS = 60_000
+const PAUSED_TITLE_PREFIX = '⏸ Paused · '
 
 const integer = (n: number) => Math.round(n).toLocaleString('en-US')
 
@@ -324,6 +326,7 @@ function App({map}: AppProps) {
   const [traffic_state, set_traffic_state] = useState<ApiState>(
     api_loading_states.NOT_STARTED()
   )
+  const [stream_paused, set_stream_paused] = useState(false)
   const aircrafts_layer_ref = useRef<AircraftLayer | null>(null)
   const webgl_layer_ref = useRef<WebGLCustomLayer | null>(null)
   const latest_states_ref = useRef<AircraftState[]>([])
@@ -414,10 +417,42 @@ function App({map}: AppProps) {
     }
   }, [aircrafts_on_screen, map, update_hovered_aircraft])
 
+  useEffect(function pause_stream_when_inactive() {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const handle_visibility_change = () => {
+      clearTimeout(timeout)
+      if (document.hidden) {
+        timeout = setTimeout(() => set_stream_paused(true), INACTIVE_DISCONNECT_MS)
+      } else {
+        set_stream_paused(false)
+      }
+    }
+    handle_visibility_change()
+    document.addEventListener('visibilitychange', handle_visibility_change)
+    return () => {
+      clearTimeout(timeout)
+      document.removeEventListener('visibilitychange', handle_visibility_change)
+    }
+  }, [])
+
+  useEffect(function paused_title() {
+    if (!stream_paused) return
+    const original_title = document.title
+    document.title = PAUSED_TITLE_PREFIX + original_title
+    return () => {
+      document.title = original_title
+    }
+  }, [stream_paused])
+
   useEffect(function handle_event_source() {
+    if (stream_paused) return
     const event_source = new EventSource(api_url('states'))
     event_source.onopen = (() => {
-      set_traffic_state(api_loading_states.LOADING())
+      set_traffic_state(previous =>
+        previous.status === LoadingStateStatus.success
+          ? previous
+          : api_loading_states.LOADING()
+      )
     })
     event_source.addEventListener("success", (event: MessageEvent<string>) => {
       const states = JSON.parse(event.data) as StatesPayload
@@ -439,7 +474,7 @@ function App({map}: AppProps) {
     return () => {
       event_source.close()
     }
-  }, [refresh_aircrafts_on_screen, set_traffic_state])
+  }, [refresh_aircrafts_on_screen, set_traffic_state, stream_paused])
 
   useEffect(function load_aircrafts_layer() {
     const load_layer = () => {
