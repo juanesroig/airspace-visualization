@@ -2,8 +2,8 @@
 
 Live air traffic rendered on an interactive 3D globe. Aircraft stream in from the backend's
 air traffic sources and are drawn in real
-time — as 3D models when you zoom in, as lightweight sprites when you zoom out — with a
-side panel of live flight cards for everything currently in view.
+time as 3D models with raw WebGL2, with a side panel of live flight cards for everything
+currently in view.
 
 **[Live demo →](https://airspace.juanesroig.com)**
 
@@ -12,11 +12,16 @@ side panel of live flight cards for everything currently in view.
 ## Features
 
 - **3D globe** built on MapLibre GL with a globe projection and a design-system-tinted atmosphere.
-- **Two-mode rendering that swaps at zoom 7.** Zoomed in: real glTF airplane models in a
-  Three.js scene sharing MapLibre's WebGL context. Zoomed out: 2D sprites on a symbol layer.
-- **Per-frame position interpolation.** Between backend updates, each aircraft is
-  dead-reckoned forward from its heading and speed and smoothly `lerp`'d, so motion stays
-  fluid instead of jumping on each poll.
+- **One instanced draw call for every aircraft.** A MapLibre custom layer shares the map's
+  WebGL2 context and draws a single airplane mesh once per aircraft with
+  `drawArraysInstanced`. No Three.js.
+- **Dead reckoning on the GPU.** Between backend updates, the vertex shader moves each
+  aircraft along its great circle from its heading and speed, so motion stays fluid
+  instead of jumping on each update.
+- **Horizon culling.** Aircraft on the far side of the globe are dropped in the vertex
+  shader using the same horizon plane MapLibre clips the globe with.
+- **GPU picking.** Hover and click redraw the aircraft into an offscreen framebuffer, each
+  in a color that encodes its id, and read back the pixel under the cursor.
 - **Live flight cards** for aircraft in the current viewport — callsign, altitude, ground
   speed, vertical rate, squawk, and an SVG compass — lazy-loaded as you scroll.
 - **Bidirectional selection.** Hovering or selecting a card highlights the aircraft on the
@@ -24,7 +29,7 @@ side panel of live flight cards for everything currently in view.
 
 ## Tech stack
 
-React 19 · TypeScript · Vite · MapLibre GL · Three.js
+React 19 · TypeScript · Vite · MapLibre GL · WebGL2
 
 ## Getting started
 
@@ -78,17 +83,19 @@ MapTiler dashboard so it can't be reused elsewhere.
 
 ## Architecture
 
-Data flows: **backend SSE → `App.tsx` → `AircraftLayer`**.
+Data flows: **backend SSE → `App.tsx` → `WebGLCustomLayer`**.
 
 - **`index.html`** stacks two DOM layers: `#map` (the MapLibre globe) under `#root` (the React
   UI). `main.tsx` creates the `Map` instance and passes it into `<App map={map} />` — React
   drives the map, it doesn't own it.
-- **[`src/map.ts`](src/map.ts) — `AircraftLayer`** is the rendering engine: it registers the
-  custom WebGL layer and the symbol layer, keeps both in sync from a single
-  `Map<hex, ...>`, interpolates positions every frame, and does mode-dependent picking
-  (Three.js `Raycaster` when zoomed in, `queryRenderedFeatures` when zoomed out).
+- **[`src/webgl.ts`](src/webgl.ts) — `WebGLCustomLayer`** is the rendering engine: a single
+  MapLibre custom layer that uploads per-aircraft data to instance buffers, dead-reckons and
+  culls in the vertex shader, and answers `pick(point)` with a GPU color-picking pass.
+- **[`src/aircraft.ts`](src/aircraft.ts)** holds the airplane mesh vertices, generated from
+  `public/airplane.glb`.
 - **[`src/App.tsx`](src/App.tsx)** owns UI state and wires MapLibre events to the layer.
 - **[`src/api.ts`](src/api.ts)** types the states wire format and fills the gaps in it (`aircraft_speed`).
-- **[`src/utils.ts`](src/utils.ts)** holds the math (`lerp`/`remap`, great-circle dead reckoning).
+- **[`src/utils.ts`](src/utils.ts)** holds small helpers (angle conversion, `debounce`) and the
+  loading-state types.
 
 See [`CLAUDE.md`](CLAUDE.md) for a deeper tour.

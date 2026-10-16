@@ -32,6 +32,7 @@ const VERTEX_SHADER_SRC = `#version 300 es
 
   uniform float u_time;
   uniform mat4 u_globe_matrix;
+  uniform vec4 u_clipping_plane;
 
   const float R = 6371008.8;
   const float MAX_DT = 30.0;
@@ -56,12 +57,17 @@ const VERTEX_SHADER_SRC = `#version 300 es
     float dt = clamp(u_time - a_motion.y, 0.0, MAX_DT);
     float theta = a_motion.x * dt / R;
 
+    // Applied right to left: dead reckoning, heading, latitude, longitude
+    mat3 rotation = rot_y(a_state.x) * rot_x(-a_state.y) * rot_z(-a_state.z) * rot_x(-theta);
+
+    vec3 center = rotation[2] * (1.0 + a_state.w / R);
+    if (dot(center, u_clipping_plane.xyz) + u_clipping_plane.w < 0.0) {
+      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+      return;
+    }
+
     vec3 m = a_position * HALF_SIZE;
-    vec3 p = vec3(m.xy / R, 1.0 + (a_state.w + m.z) / R);
-    p = rot_x(-theta)      * p;
-    p = rot_z(-a_state.z)  * p;
-    p = rot_x(-a_state.y)  * p;
-    p = rot_y( a_state.x)  * p;
+    vec3 p = rotation * vec3(m.xy / R, 1.0 + (a_state.w + m.z) / R);
 
     gl_Position = u_globe_matrix * vec4(p, 1.0);
     v_color = a_color;
@@ -121,6 +127,7 @@ type ProgramInfo = {
   program: WebGLProgram
   u_time: WebGLUniformLocation
   u_globe_matrix: WebGLUniformLocation
+  u_clipping_plane: WebGLUniformLocation
 }
 
 const create_program = (
@@ -142,12 +149,13 @@ const create_program = (
 
   const u_time = gl.getUniformLocation(program, 'u_time')
   const u_globe_matrix = gl.getUniformLocation(program, 'u_globe_matrix')
-  if (u_time === null || u_globe_matrix === null) {
+  const u_clipping_plane = gl.getUniformLocation(program, 'u_clipping_plane')
+  if (u_time === null || u_globe_matrix === null || u_clipping_plane === null) {
     console.error('Missing uniforms in program')
     gl.deleteProgram(program)
     return null
   }
-  return { program, u_time, u_globe_matrix }
+  return { program, u_time, u_globe_matrix, u_clipping_plane }
 }
 
 type PickingTarget = {
@@ -287,11 +295,9 @@ export class WebGLCustomLayer {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-        gl.uniformMatrix4fv(
-          this.color_program.u_globe_matrix,
-          false,
-          args.defaultProjectionData.mainMatrix,
-        )
+        const projection = args.defaultProjectionData
+        gl.uniformMatrix4fv(this.color_program.u_globe_matrix, false, projection.mainMatrix)
+        gl.uniform4fv(this.color_program.u_clipping_plane, projection.clippingPlane)
 
         const time = performance.now() / 1000
         gl.uniform1f(this.color_program.u_time, time)
@@ -299,7 +305,7 @@ export class WebGLCustomLayer {
         gl.drawArraysInstanced(gl.TRIANGLES, 0, AIRCRAFT_VERTEX_COUNT, this.aircraft_count);
 
         if (this.pending_picks.length > 0) {
-          this.run_picking_pass(gl, args.defaultProjectionData.mainMatrix, time)
+          this.run_picking_pass(gl, projection, time)
         }
 
         gl.vertexAttribDivisor(A_STATE_LOC, 0);
@@ -382,7 +388,7 @@ export class WebGLCustomLayer {
 
   private run_picking_pass(
     gl: WebGL2RenderingContext,
-    matrix: CustomRenderMethodInput['defaultProjectionData']['mainMatrix'],
+    projection: CustomRenderMethodInput['defaultProjectionData'],
     time: number,
   ) {
     const requests = this.pending_picks
@@ -403,7 +409,8 @@ export class WebGLCustomLayer {
     gl.disable(gl.BLEND)
 
     gl.useProgram(this.picking_program.program)
-    gl.uniformMatrix4fv(this.picking_program.u_globe_matrix, false, matrix)
+    gl.uniformMatrix4fv(this.picking_program.u_globe_matrix, false, projection.mainMatrix)
+    gl.uniform4fv(this.picking_program.u_clipping_plane, projection.clippingPlane)
     gl.uniform1f(this.picking_program.u_time, time)
     gl.drawArraysInstanced(gl.TRIANGLES, 0, AIRCRAFT_VERTEX_COUNT, this.aircraft_count)
 
