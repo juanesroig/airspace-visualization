@@ -6,7 +6,6 @@ import {
   type AircraftState,
   type StatesPayload,
 } from "./api";
-import { AircraftLayer, AIRCRAFT_COLOR, AIRCRAFT_HOVERED, AIRCRAFT_SELECTED } from "./map";
 import maplibregl from 'maplibre-gl'
 import styles from './App.module.css'
 import {
@@ -327,37 +326,24 @@ function App({map}: AppProps) {
     api_loading_states.NOT_STARTED()
   )
   const [stream_paused, set_stream_paused] = useState(false)
-  const aircrafts_layer_ref = useRef<AircraftLayer | null>(null)
   const webgl_layer_ref = useRef<WebGLCustomLayer | null>(null)
   const latest_states_ref = useRef<AircraftState[]>([])
   const flights_container_ref = useRef<HTMLDivElement | null>(null)
 
   const update_hovered_aircraft = useCallback(
     (hovered: AircraftState['hex'] | null) => {
-      const layer = aircrafts_layer_ref.current
-      set_hovered_aircraft(previous_hovered => {
-        if (previous_hovered === hovered || layer === null) {
-          return hovered
-        }
-        if (previous_hovered !== null && previous_hovered !== selected_aircraft) {
-          layer.change_aircraft_color(previous_hovered, AIRCRAFT_COLOR)
-        }
-        if (hovered !== null && hovered !== selected_aircraft) {
-          layer.change_aircraft_color(hovered, AIRCRAFT_HOVERED)
-        }
-        return hovered
-      })
+      set_hovered_aircraft(hovered)
       map.getCanvas().style.cursor = hovered !== null ? "pointer" : ""
     },
-    [map, selected_aircraft]
+    [map]
   )
 
   const update_selected_aircraft = useCallback(
     (selected: AircraftState['hex'] | null) => {
-      if (webgl_layer_ref.current === null) return
-      webgl_layer_ref.current.select_aircraft(selected)
+      set_selected_aircraft(selected)
+      webgl_layer_ref.current?.select_aircraft(selected)
     },
-    [hovered_aircraft, map]
+    []
   )
 
   const refresh_aircrafts_on_screen = useCallback(() => {
@@ -388,34 +374,44 @@ function App({map}: AppProps) {
   }, [map, refresh_aircrafts_on_screen])
 
   useEffect(function click_events() {
+    // pick() resolves a frame later and superseded requests resolve with null,
+    // so only the answer to the latest click may update the selection
+    let latest_click = 0
+    let disposed = false
     const handle_click = (ev: maplibregl.MapMouseEvent) => {
-      if (aircrafts_layer_ref.current === null) return
-      const clicked_aircraft = aircrafts_layer_ref.current.detect_mouse_on_aircraft(
-        ev,
-        aircrafts_on_screen,
-      )
-      update_selected_aircraft(clicked_aircraft)
+      const layer = webgl_layer_ref.current
+      if (layer === null) return
+      const request_id = ++latest_click
+      layer.pick(ev.point).then(clicked_aircraft => {
+        if (disposed || request_id !== latest_click) return
+        update_selected_aircraft(clicked_aircraft)
+      })
     }
     map.on('click', handle_click)
     return () => {
+      disposed = true
       map.off('click', handle_click)
     }
-  }, [aircrafts_on_screen, map, update_selected_aircraft])
+  }, [map, update_selected_aircraft])
 
   useEffect(function hover_events() {
+    let latest_hover = 0
+    let disposed = false
     const handle_mouseover = (ev: maplibregl.MapMouseEvent) => {
-      if (aircrafts_layer_ref.current === null) return
-      const hovered_aircraft = aircrafts_layer_ref.current.detect_mouse_on_aircraft(
-        ev,
-        aircrafts_on_screen,
-      )
-      update_hovered_aircraft(hovered_aircraft)
+      const layer = webgl_layer_ref.current
+      if (layer === null) return
+      const request_id = ++latest_hover
+      layer.pick(ev.point).then(hovered_aircraft => {
+        if (disposed || request_id !== latest_hover) return
+        update_hovered_aircraft(hovered_aircraft)
+      })
     }
     map.on('mousemove', handle_mouseover)
     return () => {
+      disposed = true
       map.off('mousemove', handle_mouseover)
     }
-  }, [aircrafts_on_screen, map, update_hovered_aircraft])
+  }, [map, update_hovered_aircraft])
 
   useEffect(function pause_stream_when_inactive() {
     let timeout: ReturnType<typeof setTimeout> | undefined
